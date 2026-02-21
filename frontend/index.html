@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BRDF Estimation - Interactive Demo</title>
+    <link rel="stylesheet" href="css/style.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
+</head>
+<body>
+    <div class="container">
+        <!-- Header -->
+        <header class="header">
+            <div class="header-content">
+                <h1>🎨 BRDF Material Estimation</h1>
+                <p>Estimate material properties from a single photograph using differentiable rendering</p>
+            </div>
+        </header>
+
+        <!-- Main Layout -->
+        <div class="main">
+            <!-- Left Panel: Input & Controls -->
+            <div class="panel left-panel">
+                <h2>Input & Parameters</h2>
+                
+                <!-- File Upload -->
+                <div class="control-group">
+                    <label for="file-input">Material Image</label>
+                    <input type="file" id="file-input" accept="image/*">
+                    <button id="upload-btn" class="btn btn-primary">Upload Image</button>
+                </div>
+
+                <!-- Parameter Sliders -->
+                <div class="parameters-panel">
+                    <h3>Current Parameters</h3>
+                    
+                    <div class="parameter-control">
+                        <label>Albedo (Color)</label>
+                        <div class="color-preview" id="albedo-preview"></div>
+                        <div class="slider-group">
+                            <div class="slider-item">
+                                <label>R:</label>
+                                <input type="range" id="albedo-r" min="0" max="100" value="50">
+                                <span id="albedo-r-val">0.50</span>
+                            </div>
+                            <div class="slider-item">
+                                <label>G:</label>
+                                <input type="range" id="albedo-g" min="0" max="100" value="50">
+                                <span id="albedo-g-val">0.50</span>
+                            </div>
+                            <div class="slider-item">
+                                <label>B:</label>
+                                <input type="range" id="albedo-b" min="0" max="100" value="50">
+                                <span id="albedo-b-val">0.50</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="parameter-control">
+                        <label>Roughness</label>
+                        <input type="range" id="roughness" min="0" max="100" value="50">
+                        <span id="roughness-val">0.50</span>
+                    </div>
+
+                    <div class="parameter-control">
+                        <label>Metallic</label>
+                        <input type="range" id="metallic" min="0" max="100" value="0">
+                        <span id="metallic-val">0.00</span>
+                    </div>
+                </div>
+
+                <!-- Optimization Controls -->
+                <div class="control-group">
+                    <h3>Optimization</h3>
+                    <button id="start-optimize" class="btn btn-success">Start Optimization</button>
+                    <button id="stop-optimize" class="btn btn-danger" disabled>Stop</button>
+                    <button id="reset-params" class="btn btn-secondary">Reset Parameters</button>
+                </div>
+
+                <!-- Progress -->
+                <div class="progress-section" id="progress-section" style="display: none;">
+                    <div class="progress-bar">
+                        <div class="progress-fill" id="progress-fill"></div>
+                    </div>
+                    <p id="progress-text">Iteration 0/1000 | Loss: 0.0000</p>
+                </div>
+            </div>
+
+            <!-- Center Panel: 3D Preview -->
+            <div class="panel center-panel">
+                <h2>3D Material Preview</h2>
+                <div id="canvas-container" class="canvas-container"></div>
+                <p class="help-text">Drag to rotate | Scroll to zoom | Space to toggle auto-rotate</p>
+            </div>
+
+            <!-- Right Panel: Analysis & Comparison -->
+            <div class="panel right-panel">
+                <h2>Analysis & Results</h2>
+                
+                <!-- Metrics -->
+                <div class="metrics-section">
+                    <h3>Quality Metrics</h3>
+                    <div class="metric-item">
+                        <span>PSNR:</span>
+                        <span id="metric-psnr" class="metric-value">--</span>
+                    </div>
+                    <div class="metric-item">
+                        <span>SSIM:</span>
+                        <span id="metric-ssim" class="metric-value">--</span>
+                    </div>
+                    <div class="metric-item">
+                        <span>Loss:</span>
+                        <span id="metric-loss" class="metric-value">--</span>
+                    </div>
+                </div>
+
+                <!-- Comparison Images -->
+                <div class="comparison-section">
+                    <h3>Image Comparison</h3>
+                    <div class="comparison-container">
+                        <div class="comparison-item">
+                            <img id="input-image" src="" alt="Input">
+                            <p>Input Image</p>
+                        </div>
+                        <div class="comparison-item">
+                            <img id="rendered-image" src="" alt="Rendered">
+                            <p>Estimated Render</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Loss Curve -->
+                <div class="chart-section">
+                    <h3>Optimization Curve</h3>
+                    <canvas id="loss-chart"></canvas>
+                </div>
+
+                <!-- Export -->
+                <div class="export-section">
+                    <button id="export-params" class="btn btn-primary">Export Parameters</button>
+                    <button id="export-render" class="btn btn-primary">Export Render</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Spinner -->
+    <div id="loading-spinner" class="loading-spinner" style="display: none;">
+        <div class="spinner"></div>
+        <p>Processing...</p>
+    </div>
+
+    <!-- Scripts -->
+    <script src="js/main.js"></script>
+    <script src="js/renderer.js"></script>
+    <script src="js/ui_controller.js"></script>
+</body>
+</html>
