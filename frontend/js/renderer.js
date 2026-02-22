@@ -3,6 +3,13 @@
 class ThreeJSRenderer {
     constructor(containerId) {
         this.container = document.getElementById(containerId);
+        
+        // Safety check
+        if (!this.container) {
+            console.error(`Container element with ID "${containerId}" not found`);
+            return;
+        }
+        
         this.width = this.container.clientWidth;
         this.height = this.container.clientHeight;
         
@@ -59,10 +66,19 @@ class ThreeJSRenderer {
     
     updateMaterial(params) {
         // Update Three.js material based on BRDF parameters
-        const [r, g, b] = params.albedo;
-        this.material.color.setRGB(r, g, b);
-        this.material.metalness = params.metallic;
-        this.material.roughness = params.roughness;
+        if (!params || !this.material) {
+            console.warn('Invalid parameters or material not initialized');
+            return;
+        }
+        
+        try {
+            const [r, g, b] = params.albedo;
+            this.material.color.setRGB(r, g, b);
+            this.material.metalness = params.metallic;
+            this.material.roughness = params.roughness;
+        } catch (error) {
+            console.error('Error updating material:', error);
+        }
     }
     
     setupControls() {

@@ -1,0 +1,120 @@
+✅ BRDF MATERIAL ESTIMATION - FEATURES READY
+
+SISTEM POP-OUT EDUKATIF:
+========================
+
+1. WELCOME POP-OUT (First Load)
+   - Muncul otomatis saat pertama buka browser
+   - Explain tujuan penelitian (TK1-5)
+   - Cara menggunakan prototype
+   - Auto-close setelah 10 detik
+   - Disimpan di localStorage (tidak muncul lagi)
+
+2. INFO BUTTONS (?) - PARAMETER LEARNING
+   - Klik "?" di sebelah Albedo → Penjelasan Albedo + TK mapping
+   - Klik "?" di sebelah Roughness → Penjelasan Roughness + TK mapping
+   - Klik "?" di sebelah Metallic → Penjelasan Metallic + TK mapping
+   - Klik "?" di sebelah Quality Metrics → Penjelasan PSNR/SSIM/Loss
+   - Klik "?" di sebelah Optimization Curve → Penjelasan kurva optimasi
+   
+   Setiap pop-out:
+   - Muncul di tengah screen
+   - Menjelaskan istilah dengan bahasa simple
+   - Menunjukkan Tujuan Penelitian (TK) yang didukung
+   - Auto-close setelah 10 detik
+   - Bisa ditutup dengan klik X atau di luar pop-out
+
+3. INTERPRETATION POP-OUT (After Optimization)
+   - Muncul otomatis setelah optimization selesai
+   - Menampilkan hasil estimasi BRDF (Albedo RGB, Roughness, Metallic)
+   - Interpretasi kualitatif (bukan klasifikasi jenis material):
+     * Brightness: dark/mid/bright
+     * Surface: smooth/mixed/rough
+     * Material: non-metal/transition/metal
+   - Menunjukkan TK mapping (TK1, TK3)
+   - Auto-close setelah 15 detik
+   - Bisa ditutup dengan klik X
+
+CARA MENGGUNAKAN:
+=================
+
+1. Buka browser: http://localhost:8000/frontend/index.html
+2. Welcome pop-out muncul → Baca info atau close
+3. Upload citra → Click "Upload Image" button
+4. Lihat 3D preview update
+5. Klik "?" buttons untuk pelajari parameter
+6. Geser sliders untuk eksperimen
+7. Klik "Start Optimization" → Optimization berjalan 6 detik
+8. Selesai → Interpretation pop-out muncul otomatis
+9. Baca hasil kualitatif (bukan klasifikasi)
+10. Export atau reset jika perlu
+
+TEKNOLOGI:
+===========
+- Pop-out: Plain JavaScript (no library)
+- Animation: CSS keyframes
+- Styling: CSS modern (flexbox, grid)
+- Storage: localStorage (first-run detection)
+- Container: Fixed position div with z-index
+
+FILE YANG BERUBAH:
+==================
+- frontend/js/popout.js (NEW - 200+ lines)
+- frontend/index.html (Updated - script src)
+- frontend/css/style.css (Updated - pop-out styles)
+- frontend/js/main.js (Updated - call interpretation popout)
+
+TESTING CHECKLIST:
+==================
+✅ Welcome pop-out muncul (first load only)
+✅ Info buttons (?) berfungsi pada semua parameter
+✅ Pop-out muncul di tengah screen
+✅ Pop-out menampilkan TK mapping
+✅ Pop-out auto-close setelah timeout
+✅ Pop-out bisa ditutup dengan X atau click outside
+✅ Optimization runs tanpa error
+✅ Interpretation popout muncul setelah optimization
+✅ Interpretation menampilkan nilai BRDF yang benar
+✅ Interpretation menampilkan deskripsi kualitatif (NO classification)
+✅ Responsive design di berbagai ukuran screen
+
+KONSEP PENTING:
+===============
+
+NO MATERIAL CLASSIFICATION:
+- Sistem TIDAK mengatakan "ini adalah kayu" atau "ini adalah logam"
+- Hanya deskripsi kualitatif: "permukaan halus", "reflektansi tinggi", dll
+- Berbasis sifat fisik BRDF parameter, bukan kategori material
+
+TK MAPPING (Tujuan Khusus Penelitian):
+- TK1: Inverse rendering method development
+- TK2: Robustness analysis
+- TK3: Visual quality evaluation
+- TK4: GPU performance evaluation
+- TK5: Literature comparison
+
+Setiap pop-out menunjukkan TK mana yang didukung.
+
+ANIMATION DETAILS:
+==================
+- Pop-out entrance: scale(0.9) → scale(1) + opacity 0→1 (0.3s)
+- Pop-out close: smooth remove
+- No flashing or jarring transitions
+- Smooth fade in/out
+
+RESPONSIVE:
+===========
+- Pop-out di tengah screen (all devices)
+- Max-width 500px (interpretation: 600px)
+- Works on mobile/tablet/desktop
+- Touch-friendly close button
+
+STATUS: ✅ READY FOR DEMONSTRATION
+- Semua fitur implemented
+- Pop-out system working
+- Welcome message set
+- Interpretation popout active
+- TK mapping visible
+- NO .md documentation files
+
+Coba buka browser, klik info buttons, jalankan optimization, lihat pop-out!

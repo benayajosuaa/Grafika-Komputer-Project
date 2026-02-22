@@ -9,12 +9,52 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
 </head>
 <body>
+    <!-- IMMEDIATE WELCOME POPOUT - INLINE -->
+    <div id="welcome-popout" style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); max-width: 600px; background: white; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,0.5); padding: 30px; z-index: 9999; display: block;">
+        <button onclick="document.getElementById('welcome-popout').style.display='none'" style="position: absolute; top: 12px; right: 12px; background: none; border: none; font-size: 28px; cursor: pointer; color: #999;">×</button>
+        <h2 style="color: #1e40af; margin: 0 0 16px 0;">🔬 Selamat Datang!</h2>
+        <p style="margin: 12px 0; line-height: 1.6;">Ini adalah <strong>Prototype Penelitian UTS Grafika Komputer</strong> untuk mengevaluasi <strong>feasibility pipeline inverse rendering</strong> berbasis differentiable rendering.</p>
+        
+        <p style="margin: 12px 0;"><strong>Cara Menggunakan:</strong></p>
+        <ul style="margin: 8px 0 16px 20px; line-height: 1.8;">
+            <li>Upload citra material dari komputer Anda</li>
+            <li>Klik "?" untuk mempelajari setiap parameter</li>
+            <li>Klik "Start Optimization" untuk menjalankan estimasi BRDF</li>
+            <li>Lihat interpretasi hasil setelah selesai</li>
+        </ul>
+        
+        <p style="font-size: 0.9em; color: #666; margin: 12px 0; background: #f5f5f5; padding: 12px; border-radius: 4px;">
+            💡 <strong>Penting:</strong> Sistem ini mengevaluasi feasibility pipeline, bukan akurasi production-ready. 
+            Hasil diinterpretasikan secara kualitatif berdasarkan sifat fisik parameter, bukan klasifikasi jenis material.
+        </p>
+        
+        <div style="margin-top: 16px; padding: 16px; background: rgba(37, 99, 235, 0.05); border-left: 4px solid #2563eb; border-radius: 4px; font-size: 0.9em;">
+            <strong style="color: #2563eb;">📊 Tujuan Penelitian (TK):</strong><br>
+            • TK1: Metode inverse rendering untuk estimasi BRDF<br>
+            • TK2: Robustness terhadap variasi pencahayaan & noise<br>
+            • TK3: Evaluasi kualitas visual hasil estimasi<br>
+            • TK4: Evaluasi performa komputasi GPU<br>
+            • TK5: Perbandingan dengan metode referensi
+        </div>
+        
+        <button onclick="document.getElementById('welcome-popout').style.display='none'" style="margin-top: 20px; padding: 12px 24px; background: #2563eb; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; width: 100%;">Mulai Eksplorasi</button>
+    </div>
+    
+    <script>
+        // Auto-hide after 20 seconds
+        setTimeout(function() {
+            var popup = document.getElementById('welcome-popout');
+            if (popup) popup.style.display = 'none';
+        }, 20000);
+    </script>
+    
     <div class="container">
         <!-- Header -->
         <header class="header">
             <div class="header-content">
-                <h1>BRDF Material Estimation</h1>
-                <p>Estimate material properties from a single photograph using differentiable rendering</p>
+                <h1>🔬 BRDF Material Estimation</h1>
+                <p>Prototype Penelitian UTS Grafika Komputer - Inverse Rendering berbasis Differentiable Rendering</p>
+                <p class="research-subtitle">Feasibility Evaluation untuk Estimasi Parameter Material dari Citra Smartphone</p>
             </div>
         </header>
 
@@ -36,7 +76,10 @@
                     <h3>Current Parameters</h3>
                     
                     <div class="parameter-control">
-                        <label>Albedo (Color)</label>
+                        <label>
+                            Albedo (Color)
+                            <button class="info-btn" data-term="albedo" aria-label="Learn about albedo">?</button>
+                        </label>
                         <div class="color-preview" id="albedo-preview"></div>
                         <div class="slider-group">
                             <div class="slider-item">
@@ -58,13 +101,19 @@
                     </div>
 
                     <div class="parameter-control">
-                        <label>Roughness</label>
+                        <label>
+                            Roughness
+                            <button class="info-btn" data-term="roughness" aria-label="Learn about roughness">?</button>
+                        </label>
                         <input type="range" id="roughness" min="0" max="100" value="50">
                         <span id="roughness-val">0.50</span>
                     </div>
 
                     <div class="parameter-control">
-                        <label>Metallic</label>
+                        <label>
+                            Metallic
+                            <button class="info-btn" data-term="metallic" aria-label="Learn about metallic">?</button>
+                        </label>
                         <input type="range" id="metallic" min="0" max="100" value="0">
                         <span id="metallic-val">0.00</span>
                     </div>
@@ -100,7 +149,10 @@
                 
                 <!-- Metrics -->
                 <div class="metrics-section">
-                    <h3>Quality Metrics</h3>
+                    <h3>
+                        Quality Metrics
+                        <button class="info-btn" data-term="metrics" aria-label="Learn about metrics">?</button>
+                    </h3>
                     <div class="metric-item">
                         <span>PSNR:</span>
                         <span id="metric-psnr" class="metric-value">--</span>
@@ -132,7 +184,10 @@
 
                 <!-- Loss Curve -->
                 <div class="chart-section">
-                    <h3>Optimization Curve</h3>
+                    <h3>
+                        Optimization Curve
+                        <button class="info-btn" data-term="optimization-curve" aria-label="Learn about optimization curve">?</button>
+                    </h3>
                     <canvas id="loss-chart"></canvas>
                 </div>
 
@@ -151,9 +206,107 @@
         <p>Processing...</p>
     </div>
 
+    <!-- Educational Pop-out Container -->
+    <div class="info-popout-container"></div>
+    
+    <!-- Info Popout Template (hidden) -->
+    <div id="info-popout-template" style="display: none; position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); max-width: 500px; background: white; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,0.3); padding: 24px; z-index: 9000;">
+        <button class="close-info-btn" style="position: absolute; top: 12px; right: 12px; background: none; border: none; font-size: 28px; cursor: pointer; color: #999;">×</button>
+        <h3 id="info-title" style="color: #2563eb; margin: 0 0 12px 0;"></h3>
+        <p id="info-text" style="margin: 8px 0; line-height: 1.6; color: #333; white-space: pre-line;"></p>
+        <div id="info-tk" style="margin-top: 16px; padding: 12px; background: rgba(37, 99, 235, 0.05); border-left: 3px solid #2563eb; border-radius: 4px; font-size: 0.9em;">
+            <strong style="color: #2563eb;">📊 Tujuan Penelitian:</strong><br>
+            <span id="info-tk-text"></span>
+        </div>
+    </div>
+
     <!-- Scripts -->
     <script src="js/main.js"></script>
     <script src="js/renderer.js"></script>
-    <script src="js/ui_controller.js"></script>
+    <script src="js/popout.js"></script>
+    
+    <!-- DIRECT INFO BUTTON HANDLER -->
+    <script>
+        // Knowledge base
+        var infoKnowledge = {
+            'albedo': {
+                title: 'Albedo (Warna Dasar)',
+                text: 'Parameter RGB yang merepresentasikan warna dan reflektansi dasar material. Nilai lebih tinggi = permukaan lebih cerah dan reflektif.',
+                tk: 'TK1 (Inverse Rendering), TK3 (Kualitas Visual)'
+            },
+            'roughness': {
+                title: 'Roughness (Tekstur Permukaan)',
+                text: 'Mendeskripsikan mikro-tekstur permukaan:\n• Kecil (0.0): Halus, refleksi tajam seperti cermin\n• Sedang (0.5): Campuran difus dan spekuler\n• Besar (1.0): Kasar, refleksi difus dominan',
+                tk: 'TK1 (Inverse Rendering), TK3 (Kualitas Visual)'
+            },
+            'metallic': {
+                title: 'Metallic (Sifat Logam)',
+                text: 'Menunjukkan tingkat sifat logam material:\n• 0.0: Non-logam (dielektrik)\n• 0.5: Transisi antara logam dan non-logam\n• 1.0: Logam (konduktif)',
+                tk: 'TK1 (Inverse Rendering), TK3 (Kualitas Visual)'
+            },
+            'metrics': {
+                title: 'Quality Metrics (Metrik Kualitas)',
+                text: 'PSNR (dB): Mengukur perbedaan piksel antara input dan render.\nSSIM (0-1): Mengukur kesamaan struktur visual.\nLoss: Fungsi error yang diminimalkan saat optimasi.',
+                tk: 'TK3 (Evaluasi Kualitas Visual), TK4 (Performa GPU)'
+            },
+            'optimization-curve': {
+                title: 'Optimization Curve (Kurva Optimasi)',
+                text: 'Menampilkan penurunan loss sepanjang iterasi. Sumbu X: iterasi (0-300). Sumbu Y: loss value (skala logaritmik). Menunjukkan proses inverse rendering berjalan.',
+                tk: 'TK1 (Inverse Rendering), TK4 (Performa GPU)'
+            }
+        };
+        
+        // Show info popout
+        function showInfo(term) {
+            console.log('showInfo called with term:', term);
+            var info = infoKnowledge[term];
+            if (!info) {
+                console.warn('Unknown term:', term);
+                return;
+            }
+            
+            var popout = document.getElementById('info-popout-template');
+            document.getElementById('info-title').textContent = info.title;
+            document.getElementById('info-text').textContent = info.text;
+            document.getElementById('info-tk-text').textContent = info.tk;
+            
+            popout.style.display = 'block';
+            console.log('✓ Info popout shown for:', term);
+            
+            // Auto-close after 12 seconds
+            setTimeout(function() {
+                popout.style.display = 'none';
+            }, 12000);
+        }
+        
+        // Close button handler
+        document.addEventListener('DOMContentLoaded', function() {
+            var closeBtn = document.querySelector('.close-info-btn');
+            if (closeBtn) {
+                closeBtn.onclick = function() {
+                    document.getElementById('info-popout-template').style.display = 'none';
+                };
+            }
+            
+            // Click outside to close
+            document.getElementById('info-popout-template').addEventListener('click', function(e) {
+                if (e.target === this) {
+                    this.style.display = 'none';
+                }
+            });
+        });
+        
+        // Handle all info button clicks
+        document.addEventListener('click', function(e) {
+            var btn = e.target.closest('.info-btn');
+            if (btn) {
+                e.preventDefault();
+                e.stopPropagation();
+                var term = btn.getAttribute('data-term');
+                console.log('Info button clicked! Term:', term);
+                showInfo(term);
+            }
+        }, true);
+    </script>
 </body>
 </html>

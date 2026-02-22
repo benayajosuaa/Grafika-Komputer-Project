@@ -90,37 +90,49 @@ class BRDFApp {
     
     initializeEventListeners() {
         // File upload
-        document.getElementById('upload-btn').addEventListener('click', () => this.handleImageUpload());
+        const uploadBtn = document.getElementById('upload-btn');
+        if (uploadBtn) uploadBtn.addEventListener('click', () => this.handleImageUpload());
         
         // Parameters
         ['albedo-r', 'albedo-g', 'albedo-b'].forEach((id, i) => {
-            document.getElementById(id).addEventListener('input', (e) => {
+            const el = document.getElementById(id);
+            if (el) el.addEventListener('input', (e) => {
                 this.parameters.albedo[i] = parseInt(e.target.value) / 100;
                 this.updateParameterDisplay();
                 this.updatePreview();
             });
         });
         
-        document.getElementById('roughness').addEventListener('input', (e) => {
+        const roughnessEl = document.getElementById('roughness');
+        if (roughnessEl) roughnessEl.addEventListener('input', (e) => {
             this.parameters.roughness = parseInt(e.target.value) / 100;
             this.updateParameterDisplay();
             this.updatePreview();
         });
         
-        document.getElementById('metallic').addEventListener('input', (e) => {
+        const metallicEl = document.getElementById('metallic');
+        if (metallicEl) metallicEl.addEventListener('input', (e) => {
             this.parameters.metallic = parseInt(e.target.value) / 100;
             this.updateParameterDisplay();
             this.updatePreview();
         });
         
         // Optimization controls
-        document.getElementById('start-optimize').addEventListener('click', () => this.startOptimization());
-        document.getElementById('stop-optimize').addEventListener('click', () => this.stopOptimization());
-        document.getElementById('reset-params').addEventListener('click', () => this.resetParameters());
+        const startBtn = document.getElementById('start-optimize');
+        if (startBtn) startBtn.addEventListener('click', () => this.startOptimization());
+        
+        const stopBtn = document.getElementById('stop-optimize');
+        if (stopBtn) stopBtn.addEventListener('click', () => this.stopOptimization());
+        
+        const resetBtn = document.getElementById('reset-params');
+        if (resetBtn) resetBtn.addEventListener('click', () => this.resetParameters());
         
         // Export
-        document.getElementById('export-params').addEventListener('click', () => this.exportParameters());
-        document.getElementById('export-render').addEventListener('click', () => this.exportRender());
+        const exportParamsBtn = document.getElementById('export-params');
+        if (exportParamsBtn) exportParamsBtn.addEventListener('click', () => this.exportParameters());
+        
+        const exportRenderBtn = document.getElementById('export-render');
+        if (exportRenderBtn) exportRenderBtn.addEventListener('click', () => this.exportRender());
     }
     
     initializeRenderer() {
@@ -130,32 +142,48 @@ class BRDFApp {
     
     handleImageUpload() {
         const fileInput = document.getElementById('file-input');
-        if (fileInput.files.length === 0) return;
+        if (!fileInput || fileInput.files.length === 0) {
+            alert('Please select an image first!');
+            return;
+        }
         
         const file = fileInput.files[0];
         const reader = new FileReader();
         
         reader.onload = (e) => {
             this.currentImage = e.target.result;
-            document.getElementById('input-image').src = this.currentImage;
+            const imgEl = document.getElementById('input-image');
+            if (imgEl) imgEl.src = this.currentImage;
             console.log('✓ Image uploaded');
             this.showMessage('Image uploaded successfully!');
+        };
+        
+        reader.onerror = () => {
+            this.showMessage('Error reading file!');
         };
         
         reader.readAsDataURL(file);
     }
     
     updateParameterDisplay() {
-        document.getElementById('albedo-r-val').textContent = this.parameters.albedo[0].toFixed(2);
-        document.getElementById('albedo-g-val').textContent = this.parameters.albedo[1].toFixed(2);
-        document.getElementById('albedo-b-val').textContent = this.parameters.albedo[2].toFixed(2);
-        document.getElementById('roughness-val').textContent = this.parameters.roughness.toFixed(2);
-        document.getElementById('metallic-val').textContent = this.parameters.metallic.toFixed(2);
+        const updateEl = (id, value) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = value;
+        };
+        
+        updateEl('albedo-r-val', this.parameters.albedo[0].toFixed(2));
+        updateEl('albedo-g-val', this.parameters.albedo[1].toFixed(2));
+        updateEl('albedo-b-val', this.parameters.albedo[2].toFixed(2));
+        updateEl('roughness-val', this.parameters.roughness.toFixed(2));
+        updateEl('metallic-val', this.parameters.metallic.toFixed(2));
         
         // Update color preview
-        const [r, g, b] = this.parameters.albedo;
-        const rgbColor = `rgb(${Math.round(r*255)}, ${Math.round(g*255)}, ${Math.round(b*255)})`;
-        document.getElementById('albedo-preview').style.backgroundColor = rgbColor;
+        const previewEl = document.getElementById('albedo-preview');
+        if (previewEl) {
+            const [r, g, b] = this.parameters.albedo;
+            const rgbColor = `rgb(${Math.round(r*255)}, ${Math.round(g*255)}, ${Math.round(b*255)})`;
+            previewEl.style.backgroundColor = rgbColor;
+        }
     }
     
     updatePreview() {
@@ -172,10 +200,15 @@ class BRDFApp {
         }
         
         this.isOptimizing = true;
-        document.getElementById('start-optimize').disabled = true;
-        document.getElementById('stop-optimize').disabled = false;
-        document.getElementById('progress-section').style.display = 'block';
-        document.getElementById('loading-spinner').style.display = 'block';
+        const startBtn = document.getElementById('start-optimize');
+        const stopBtn = document.getElementById('stop-optimize');
+        const progressSection = document.getElementById('progress-section');
+        const spinner = document.getElementById('loading-spinner');
+        
+        if (startBtn) startBtn.disabled = true;
+        if (stopBtn) stopBtn.disabled = false;
+        if (progressSection) progressSection.style.display = 'block';
+        if (spinner) spinner.style.display = 'block';
         
         try {
             await this.runOptimization();
@@ -184,9 +217,9 @@ class BRDFApp {
             alert('Optimization failed: ' + error.message);
         } finally {
             this.isOptimizing = false;
-            document.getElementById('start-optimize').disabled = false;
-            document.getElementById('stop-optimize').disabled = true;
-            document.getElementById('loading-spinner').style.display = 'none';
+            if (startBtn) startBtn.disabled = false;
+            if (stopBtn) stopBtn.disabled = true;
+            if (spinner) spinner.style.display = 'none';
         }
     }
     
@@ -225,6 +258,20 @@ class BRDFApp {
         
         // Final metrics update
         this.updateMetricsDisplay();
+        
+        // Show interpretation popout if system initialized
+        try {
+            if (window.simplePopout) {
+                window.simplePopout.showInterpretationPopout(
+                    this.parameters.albedo,
+                    this.parameters.roughness,
+                    this.parameters.metallic
+                );
+            }
+        } catch (e) {
+            console.warn('Could not show interpretation popout:', e);
+        }
+        
         console.log('✓ Optimization complete');
         console.log('Final BRDF Parameters:', this.parameters);
         console.log('Metrics:', this.metrics);
@@ -232,7 +279,8 @@ class BRDFApp {
     
     stopOptimization() {
         this.isOptimizing = false;
-        document.getElementById('stop-optimize').disabled = true;
+        const stopBtn = document.getElementById('stop-optimize');
+        if (stopBtn) stopBtn.disabled = true;
         this.showMessage('Optimization stopped');
     }
     
@@ -245,24 +293,35 @@ class BRDFApp {
         this.lossHistory = [];
         this.paramHistory = [];
         
-        // Reset UI
-        document.getElementById('albedo-r').value = 50;
-        document.getElementById('albedo-g').value = 50;
-        document.getElementById('albedo-b').value = 50;
-        document.getElementById('roughness').value = 50;
-        document.getElementById('metallic').value = 0;
+        // Reset UI sliders
+        const sliders = {
+            'albedo-r': 50,
+            'albedo-g': 50,
+            'albedo-b': 50,
+            'roughness': 50,
+            'metallic': 0
+        };
+        
+        Object.entries(sliders).forEach(([id, value]) => {
+            const el = document.getElementById(id);
+            if (el) el.value = value;
+        });
         
         this.updateParameterDisplay();
         this.updatePreview();
-        document.getElementById('progress-section').style.display = 'none';
+        const progressSection = document.getElementById('progress-section');
+        if (progressSection) progressSection.style.display = 'none';
         
         this.showMessage('Parameters reset');
     }
     
     updateProgressBar(current, total, loss) {
         const percentage = (current / total) * 100;
-        document.getElementById('progress-fill').style.width = percentage + '%';
-        document.getElementById('progress-text').textContent = 
+        const fillEl = document.getElementById('progress-fill');
+        const textEl = document.getElementById('progress-text');
+        
+        if (fillEl) fillEl.style.width = percentage + '%';
+        if (textEl) textEl.textContent = 
             `Iteration ${current}/${total} | Loss: ${loss.toFixed(6)}`;
     }
     
@@ -271,16 +330,21 @@ class BRDFApp {
         if (this.lossChart && this.lossHistory.length > 0) {
             this.lossChart.data.labels = this.lossHistory.map((_, i) => i);
             this.lossChart.data.datasets[0].data = this.lossHistory;
-            this.lossChart.update('none');
+            this.lossChart.update('none');  // No animation
         }
     }
     
     updateMetricsDisplay() {
         // Calculate metrics from loss history
+        const updateEl = (id, value) => {
+            const el = document.getElementById(id);
+            if (el) el.textContent = value;
+        };
+        
         if (this.lossHistory.length === 0) {
-            document.getElementById('metric-psnr').textContent = '--';
-            document.getElementById('metric-ssim').textContent = '--';
-            document.getElementById('metric-loss').textContent = '--';
+            updateEl('metric-psnr', '--');
+            updateEl('metric-ssim', '--');
+            updateEl('metric-loss', '--');
             return;
         }
         
@@ -290,9 +354,9 @@ class BRDFApp {
         const psnr = (28 - (Math.log10(finalLoss) + 3) * 4.3).toFixed(2);
         const ssim = Math.max(0.3, (1 - finalLoss * 100)).toFixed(3);
         
-        document.getElementById('metric-psnr').textContent = isNaN(psnr) ? '--' : psnr + ' dB';
-        document.getElementById('metric-ssim').textContent = isNaN(ssim) ? '--' : ssim;
-        document.getElementById('metric-loss').textContent = finalLoss.toFixed(6);
+        updateEl('metric-psnr', isNaN(psnr) ? '--' : psnr + ' dB');
+        updateEl('metric-ssim', isNaN(ssim) ? '--' : ssim);
+        updateEl('metric-loss', finalLoss.toFixed(6));
         
         this.metrics = {
             psnr: parseFloat(psnr),
@@ -302,41 +366,65 @@ class BRDFApp {
     }
     
     exportParameters() {
-        const params = {
-            timestamp: new Date().toISOString(),
-            parameters: this.parameters,
-            losses: this.lossHistory,
-            iterations: this.paramHistory.length
-        };
-        
-        const dataStr = JSON.stringify(params, null, 2);
-        const dataBlob = new Blob([dataStr], {type: 'application/json'});
-        const url = URL.createObjectURL(dataBlob);
-        
-        const link = document.createElement('a');
-        link.href = url;
-        link.download = `brdf_params_${Date.now()}.json`;
-        link.click();
-        
-        this.showMessage('Parameters exported!');
+        try {
+            const params = {
+                timestamp: new Date().toISOString(),
+                parameters: this.parameters,
+                losses: this.lossHistory,
+                iterations: this.paramHistory.length
+            };
+            
+            const dataStr = JSON.stringify(params, null, 2);
+            const dataBlob = new Blob([dataStr], {type: 'application/json'});
+            const url = URL.createObjectURL(dataBlob);
+            
+            const link = document.createElement('a');
+            if (link) {
+                link.href = url;
+                link.download = `brdf_params_${Date.now()}.json`;
+                link.click();
+            }
+            
+            this.showMessage('Parameters exported!');
+        } catch (error) {
+            this.showMessage(`Error exporting parameters: ${error.message}`);
+            console.error(error);
+        }
     }
     
     exportRender() {
-        if (this.renderer && this.renderer.canvas) {
-            this.renderer.canvas.toBlob(blob => {
-                const url = URL.createObjectURL(blob);
-                const link = document.createElement('a');
-                link.href = url;
-                link.download = `brdf_render_${Date.now()}.png`;
-                link.click();
-                this.showMessage('Render exported!');
-            });
+        try {
+            if (this.renderer && this.renderer.canvas) {
+                this.renderer.canvas.toBlob(blob => {
+                    if (!blob) {
+                        this.showMessage('Error: Could not create image blob');
+                        return;
+                    }
+                    
+                    const url = URL.createObjectURL(blob);
+                    const link = document.createElement('a');
+                    
+                    if (link) {
+                        link.href = url;
+                        link.download = `brdf_render_${Date.now()}.png`;
+                        link.click();
+                    }
+                    
+                    this.showMessage('Render exported!');
+                });
+            } else {
+                this.showMessage('Error: Renderer not initialized');
+            }
+        } catch (error) {
+            this.showMessage(`Error exporting render: ${error.message}`);
+            console.error(error);
         }
     }
     
     showMessage(msg) {
         console.log(msg);
         // Could add toast notification here
+        alert(msg);
     }
 }
 
