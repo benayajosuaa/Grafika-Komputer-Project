@@ -138,6 +138,60 @@ class BRDFApp {
     initializeRenderer() {
         this.renderer = new ThreeJSRenderer('canvas-container');
         console.log('✓ Three.js renderer initialized');
+        this.updateSystemInfo();
+        this.startPerformanceProbe();
+    }
+
+    updateSystemInfo() {
+        const webglEl = document.getElementById('webgl-status');
+        const rendererEl = document.getElementById('renderer-info');
+
+        const hasWebGL = (() => {
+            try {
+                const canvas = document.createElement('canvas');
+                return !!(canvas.getContext('webgl') || canvas.getContext('experimental-webgl'));
+            } catch (e) {
+                return false;
+            }
+        })();
+
+        if (webglEl) {
+            webglEl.textContent = hasWebGL ? 'Supported' : 'Not supported';
+        }
+
+        if (rendererEl && this.renderer && this.renderer.renderer) {
+            const info = this.renderer.renderer.getContext();
+            const gl = info;
+            const vendor = gl.getParameter(gl.VENDOR);
+            const renderer = gl.getParameter(gl.RENDERER);
+            rendererEl.textContent = `${vendor} | ${renderer}`;
+        } else if (rendererEl) {
+            rendererEl.textContent = 'Renderer not ready';
+        }
+    }
+
+    startPerformanceProbe() {
+        const avgFrameEl = document.getElementById('avg-frame');
+        if (!avgFrameEl) return;
+
+        let frameCount = 0;
+        let startTime = performance.now();
+
+        const probe = (now) => {
+            frameCount += 1;
+            const elapsed = now - startTime;
+
+            if (elapsed >= 1000) {
+                const avgFrameMs = elapsed / frameCount;
+                avgFrameEl.textContent = `${avgFrameMs.toFixed(2)} ms`;
+                frameCount = 0;
+                startTime = now;
+            }
+
+            requestAnimationFrame(probe);
+        };
+
+        requestAnimationFrame(probe);
     }
     
     handleImageUpload() {
@@ -154,6 +208,103 @@ class BRDFApp {
             this.currentImage = e.target.result;
             const imgEl = document.getElementById('input-image');
             if (imgEl) imgEl.src = this.currentImage;
+
+            const tempImg = new Image();
+            tempImg.onload = () => {
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                const size = 96;
+                canvas.width = size;
+                canvas.height = size;
+
+                const minDim = Math.min(tempImg.width, tempImg.height);
+                const sx = Math.floor((tempImg.width - minDim) / 2);
+                const sy = Math.floor((tempImg.height - minDim) / 2);
+                ctx.drawImage(tempImg, sx, sy, minDim, minDim, 0, 0, size, size);
+
+                const { data } = ctx.getImageData(0, 0, size, size);
+                const pixelCount = size * size;
+                let sumR = 0;
+                let sumG = 0;
+                let sumB = 0;
+                let sumL = 0;
+                let sumL2 = 0;
+                let highlightCount = 0;
+                let validCount = 0;
+
+                for (let i = 0; i < data.length; i += 4) {
+                    const r = data[i] / 255;
+                    const g = data[i + 1] / 255;
+                    const b = data[i + 2] / 255;
+                    const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+
+                    if (luminance > 0.8) {
+                        highlightCount += 1;
+                    }
+
+                    if (luminance < 0.05 || luminance > 0.95) {
+                        continue;
+                    }
+
+                    sumR += r;
+                    sumG += g;
+                    sumB += b;
+                    sumL += luminance;
+                    sumL2 += luminance * luminance;
+                    validCount += 1;
+                }
+
+                const safeCount = validCount > 0 ? validCount : pixelCount;
+                const avgR = (validCount > 0 ? sumR : data.filter((_, idx) => idx % 4 === 0).reduce((a, v) => a + v / 255, 0)) / safeCount;
+                const avgG = (validCount > 0 ? sumG : data.filter((_, idx) => idx % 4 === 1).reduce((a, v) => a + v / 255, 0)) / safeCount;
+                const avgB = (validCount > 0 ? sumB : data.filter((_, idx) => idx % 4 === 2).reduce((a, v) => a + v / 255, 0)) / safeCount;
+                const avgL = (validCount > 0 ? sumL : (avgR * 0.2126 + avgG * 0.7152 + avgB * 0.0722));
+                const variance = Math.max(0, (validCount > 0 ? sumL2 / safeCount - avgL * avgL : 0));
+                const stdDev = Math.sqrt(variance);
+
+                const maxRGB = Math.max(avgR, avgG, avgB);
+                const minRGB = Math.min(avgR, avgG, avgB);
+                const saturation = maxRGB === 0 ? 0 : (maxRGB - minRGB) / maxRGB;
+                const highlightRatio = highlightCount / pixelCount;
+
+                const clamp = (v, min = 0, max = 1) => Math.max(min, Math.min(max, v));
+
+                const neutralness = 1 - saturation;
+                const colorPenalty = saturation * 0.7;
+                const variancePenalty = stdDev * 0.5;
+                const metallicEstimate = 0.08 + neutralness * 0.55 + highlightRatio * 0.7 - colorPenalty - variancePenalty;
+                this.parameters.metallic = clamp(metallicEstimate, 0, 1);
+
+                const grayscale = avgL;
+                const metalBlend = this.parameters.metallic;
+                this.parameters.albedo = [avgR, avgG, avgB].map(v => clamp(v * (1 - metalBlend) + grayscale * metalBlend));
+
+                const roughnessEstimate = 0.3 + stdDev * 0.7 - highlightRatio * 0.25;
+                this.parameters.roughness = clamp(roughnessEstimate, 0.15, 0.98);
+
+                const sliderMap = {
+                    'albedo-r': Math.round(this.parameters.albedo[0] * 100),
+                    'albedo-g': Math.round(this.parameters.albedo[1] * 100),
+                    'albedo-b': Math.round(this.parameters.albedo[2] * 100),
+                    'roughness': Math.round(this.parameters.roughness * 100),
+                    'metallic': Math.round(this.parameters.metallic * 100)
+                };
+
+                Object.entries(sliderMap).forEach(([id, value]) => {
+                    const el = document.getElementById(id);
+                    if (el) el.value = value;
+                });
+
+                this.updateParameterDisplay();
+                this.updatePreview();
+            };
+
+            tempImg.onerror = () => {
+                this.showMessage('Error loading image for analysis.');
+            };
+
+            tempImg.src = this.currentImage;
+
             console.log('✓ Image uploaded');
             this.showMessage('Image uploaded successfully!');
         };
@@ -226,13 +377,19 @@ class BRDFApp {
     async runOptimization() {
         // Simulate BRDF optimization
         const numIterations = 300;
+        const baseParams = {
+            albedo: [...this.parameters.albedo],
+            roughness: this.parameters.roughness,
+            metallic: this.parameters.metallic
+        };
         
         for (let i = 0; i < numIterations && this.isOptimizing; i++) {
-            // Simulate parameter updates
-            this.parameters.albedo[0] += (Math.random() - 0.5) * 0.01;
-            this.parameters.albedo[1] += (Math.random() - 0.5) * 0.01;
-            this.parameters.albedo[2] += (Math.random() - 0.5) * 0.01;
-            this.parameters.roughness += (Math.random() - 0.5) * 0.01;
+            const noiseScale = 0.002;
+            this.parameters.albedo[0] = baseParams.albedo[0] + (Math.random() - 0.5) * noiseScale;
+            this.parameters.albedo[1] = baseParams.albedo[1] + (Math.random() - 0.5) * noiseScale;
+            this.parameters.albedo[2] = baseParams.albedo[2] + (Math.random() - 0.5) * noiseScale;
+            this.parameters.roughness = baseParams.roughness + (Math.random() - 0.5) * noiseScale;
+            this.parameters.metallic = baseParams.metallic;
             
             // Clamp values
             this.parameters.albedo = this.parameters.albedo.map(v => Math.max(0, Math.min(1, v)));
