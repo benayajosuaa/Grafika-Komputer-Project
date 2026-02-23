@@ -1,0 +1,4 @@
+Paper,Year,Venue,Input,Lighting,Method,Dataset,Output,Strength,Limitation
+[Paper 1],[YYYY],[Venue],[Single/Multi],[Controlled/Natural],[DL/Optimization],[Dataset],[BRDF/SVBRDF],[Strength],[Limitation]
+[Paper 2],[YYYY],[Venue],[Single/Multi],[Controlled/Natural],[DL/Optimization],[Dataset],[BRDF/SVBRDF],[Strength],[Limitation]
+[Paper 3],[YYYY],[Venue],[Single/Multi],[Controlled/Natural],[DL/Optimization],[Dataset],[BRDF/SVBRDF],[Strength],[Limitation]
