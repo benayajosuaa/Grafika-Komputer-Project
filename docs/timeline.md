@@ -85,7 +85,7 @@ Day 5-6: Proof of Concept (Code Start)
 - Math heavy - may need external resources
 - Deciding on correct algorithm approach
 
----
+
 
 ### **WEEK 11: March 16 - 20, 2025**
 #### 🎯 Fokus: Core Algorithm Implementation & Refinement
@@ -300,6 +300,8 @@ BRDF-Estimation-Research/
 - All sections finished
 - Submitted for publication
 
+<br/>
+
 ---
 
 ## Gantt Chart
@@ -334,16 +336,18 @@ Phase 2: Core Development (Week 11-13)
 Phase 3: Integration & Polish (Week 13-14)
 ```
 
+<br/>
+
 ## Milestone Roadmap
 
 | Week | Milestone | Status |
 |------|-----------|--------|
-| 9 | Deep research completed, environment ready | 🟡 Planning |
-| 10 | Algorithm designed, PoC started | 🟡 Planning |
-| 11 | Core backend working | 🟡 Planning |
-| 12 | API ready, frontend initialized | 🟡 Planning |
-| 13 | Full integration, all bugs fixed | 🟡 Planning |
-| 14 | **DEPLOYMENT** & **PAPER SUBMITTED** | 🟡 Planning |
+| 9 | Deep research completed, environment ready |  Planning |
+| 10 | Algorithm designed, PoC started |  Planning |
+| 11 | Core backend working |  Planning |
+| 12 | API ready, frontend initialized |  Planning |
+| 13 | Full integration, all bugs fixed |  Planning |
+| 14 | **DEPLOYMENT** & **PAPER SUBMITTED** |  Planning |
 
 
 
@@ -373,7 +377,7 @@ Phase 3: Integration & Polish (Week 13-14)
 - **Time Split:** 30% Deployment, 50% Paper writing, 20% Final polish
 - **Key Output:** Submission ready
 
-
+<br/>
 
 ## Key Assumptions & Risk Mitigation
 
