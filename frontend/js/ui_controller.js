@@ -15,6 +15,7 @@ class UIController {
         this.setupControlButtons();
     }
     
+    
     setupParameterSliders() {
         // Update preview on any parameter change
         const sliders = document.querySelectorAll('input[type="range"]');

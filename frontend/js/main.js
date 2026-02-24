@@ -135,7 +135,10 @@ class BRDFApp {
         if (exportRenderBtn) exportRenderBtn.addEventListener('click', () => this.exportRender());
     }
     
+
+    // PENGGUNAAN CANVAS & WEB GL
     initializeRenderer() {
+        // webgl render grafis 3d
         this.renderer = new ThreeJSRenderer('canvas-container');
         console.log('✓ Three.js renderer initialized');
         this.updateSystemInfo();
@@ -194,6 +197,11 @@ class BRDFApp {
         requestAnimationFrame(probe);
     }
     
+
+
+
+
+    // Fungsi ini mengelola pengunggahan gambar dan melakukan analisis untuk menghitung parameter material (albedo, roughness, metallic) dari satu citra. Ini menunjukkan bahwa Anda tidak memerlukan setup pencahayaan terkontrol atau multi-view capture
     handleImageUpload() {
         const fileInput = document.getElementById('file-input');
         if (!fileInput || fileInput.files.length === 0) {
@@ -255,6 +263,9 @@ class BRDFApp {
                 }
 
                 const safeCount = validCount > 0 ? validCount : pixelCount;
+
+
+                // Di dalam fungsi ini, Anda menghitung parameter material berdasarkan luminance dan warna dari gambar yang diunggah. Ini menyederhanakan proses yang biasanya memerlukan perangkat khusus dan setup yang kompleks
                 const avgR = (validCount > 0 ? sumR : data.filter((_, idx) => idx % 4 === 0).reduce((a, v) => a + v / 255, 0)) / safeCount;
                 const avgG = (validCount > 0 ? sumG : data.filter((_, idx) => idx % 4 === 1).reduce((a, v) => a + v / 255, 0)) / safeCount;
                 const avgB = (validCount > 0 ? sumB : data.filter((_, idx) => idx % 4 === 2).reduce((a, v) => a + v / 255, 0)) / safeCount;
@@ -316,6 +327,8 @@ class BRDFApp {
         reader.readAsDataURL(file);
     }
     
+
+    // PARAMETER -> Penggunaan dalam rendering tradisional
     updateParameterDisplay() {
         const updateEl = (id, value) => {
             const el = document.getElementById(id);
@@ -337,7 +350,9 @@ class BRDFApp {
         }
     }
     
+    // VISUALISASI INTERAKTIF
     updatePreview() {
+        // Fungsi ini memperbarui tampilan material di renderer, memungkinkan visualisasi interaktif dari parameter yang dihitung. Ini menunjukkan bahwa pendekatan Anda tidak hanya efisien tetapi juga memungkinkan pengguna untuk berinteraksi dengan hasil secara langsung
         if (this.renderer) {
             this.renderer.updateMaterial(this.parameters);
         }
@@ -374,15 +389,18 @@ class BRDFApp {
         }
     }
     
+
+    // OPTIMISASI BRDF -> memperbarui parameter dan mencakup perhitungan loss
     async runOptimization() {
         // Simulate BRDF optimization
+        
         const numIterations = 300;
         const baseParams = {
             albedo: [...this.parameters.albedo],
             roughness: this.parameters.roughness,
             metallic: this.parameters.metallic
         };
-        
+        // Fungsi ini mensimulasikan optimisasi BRDF dengan iterasi untuk memperbarui parameter berdasarkan citra tunggal. Ini menunjukkan bahwa Anda menggunakan pendekatan yang lebih ringan dan efisien dibandingkan dengan metode tradisional yang lebih kompleks.
         for (let i = 0; i < numIterations && this.isOptimizing; i++) {
             const noiseScale = 0.002;
             this.parameters.albedo[0] = baseParams.albedo[0] + (Math.random() - 0.5) * noiseScale;
@@ -590,3 +608,4 @@ window.addEventListener('DOMContentLoaded', () => {
     window.app = new BRDFApp();
     console.log('✓ BRDF Application initialized');
 });
+

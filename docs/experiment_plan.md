@@ -1,38 +1,51 @@
 # Experiment Plan
 
 ## Tujuan Evaluasi
-- Validasi visual hasil estimasi BRDF
-- Uji robustness terhadap variasi lighting/noise
-- Ukur performa GPU (frame time, FPS)
+- Validasi visual hasil estimasi BRDF dari single-image.
+- Uji robustness terhadap variasi pencahayaan dan noise.
+- Ukur performa GPU (frame time, FPS) pada WebGL.
 
-## Variasi Eksperimen
-### 1) Variasi Lighting
-- [ ] Indoor terang
-- [ ] Indoor redup
-- [ ] Outdoor siang
-- [ ] Outdoor sore
+## Setup Eksperimen
+- **Perangkat**: [jenis smartphone/PC]
+- **Resolusi input**: [misal 512x512]
+- **Model material**: [Cook-Torrance / GGX]
+- **Iterasi optimisasi**: [jumlah]
 
-### 2) Variasi Noise
-- [ ] Noise rendah
-- [ ] Noise sedang
-- [ ] Noise tinggi
+## Desain Eksperimen
+### A) Variasi Pencahayaan
+- Indoor terang
+- Indoor redup
+- Outdoor siang
+- Outdoor sore
 
-### 3) Variasi Material
-- [ ] Dielektrik
-- [ ] Logam
-- [ ] Semi-metallic
+### B) Variasi Noise
+- Noise rendah
+- Noise sedang
+- Noise tinggi
 
-## Metrik
-- **PSNR**: [target / rentang]
-- **SSIM**: [target / rentang]
-- **Frame time**: [ms]
-- **FPS**: [min]
+### C) Variasi Material
+- Dielektrik (non-logam)
+- Logam
+- Semi-metallic
 
-## Baseline / Referensi
-- [Paper/Metode pembanding]
-- [Benchmark sederhana jika ada]
+## Prosedur
+1. Ambil foto material pada kondisi yang ditentukan.
+2. Jalankan pipeline estimasi BRDF.
+3. Simpan output parameter dan hasil render.
+4. Hitung metrik PSNR/SSIM dan catat frame time/FPS.
+5. Ulangi untuk setiap variasi kondisi.
 
-## Format Pelaporan
-- Tabel ringkas hasil per kondisi
-- Screenshot hasil render (input vs output)
-- Catatan observasi kualitatif
+## Metrik & Indikator
+- **PSNR**: semakin tinggi semakin baik.
+- **SSIM**: mendekati 1 berarti struktur lebih mirip.
+- **Frame time**: semakin kecil semakin baik.
+- **FPS**: semakin tinggi semakin baik.
+
+## Baseline / Pembanding
+- Referensi literatur yang memakai multi-view atau DL.
+- Perbandingan kualitatif dengan hasil render sederhana (tanpa optimisasi).
+
+## Output & Pelaporan
+- Tabel ringkas hasil per kondisi.
+- Screenshot input vs output.
+- Catatan observasi kualitatif (artefak, stabilitas).
