@@ -9,45 +9,6 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@3.9.1/dist/chart.min.js"></script>
 </head>
 <body>
-    <!-- IMMEDIATE WELCOME POPOUT - INLINE -->
-    <div id="welcome-popout" style="position: fixed; top: 50%; left: 50%; transform: translate(-50%, -50%); max-width: 600px; background: white; border-radius: 8px; box-shadow: 0 10px 40px rgba(0,0,0,0.5); padding: 30px; z-index: 9999; display: block;">
-        <button onclick="document.getElementById('welcome-popout').style.display='none'" style="position: absolute; top: 12px; right: 12px; background: none; border: none; font-size: 28px; cursor: pointer; color: #999;">×</button>
-        <h2 style="color: #1e40af; margin: 0 0 16px 0;">🔬 Selamat Datang!</h2>
-        <p style="margin: 12px 0; line-height: 1.6;">Ini adalah <strong>Prototype Penelitian UTS Grafika Komputer</strong> untuk mengevaluasi <strong>feasibility pipeline inverse rendering</strong> berbasis differentiable rendering.</p>
-        
-        <p style="margin: 12px 0;"><strong>Cara Menggunakan:</strong></p>
-        <ul style="margin: 8px 0 16px 20px; line-height: 1.8;">
-            <li>Upload citra material dari komputer Anda</li>
-            <li>Klik "?" untuk mempelajari setiap parameter</li>
-            <li>Klik "Start Optimization" untuk menjalankan estimasi BRDF</li>
-            <li>Lihat interpretasi hasil setelah selesai</li>
-        </ul>
-        
-        <p style="font-size: 0.9em; color: #666; margin: 12px 0; background: #f5f5f5; padding: 12px; border-radius: 4px;">
-            💡 <strong>Penting:</strong> Sistem ini mengevaluasi feasibility pipeline, bukan akurasi production-ready. 
-            Hasil diinterpretasikan secara kualitatif berdasarkan sifat fisik parameter, bukan klasifikasi jenis material.
-        </p>
-        
-        <div style="margin-top: 16px; padding: 16px; background: rgba(37, 99, 235, 0.05); border-left: 4px solid #2563eb; border-radius: 4px; font-size: 0.9em;">
-            <strong style="color: #2563eb;">📊 Tujuan Penelitian (TK):</strong><br>
-            • TK1: Metode inverse rendering untuk estimasi BRDF<br>
-            • TK2: Robustness terhadap variasi pencahayaan & noise<br>
-            • TK3: Evaluasi kualitas visual hasil estimasi<br>
-            • TK4: Evaluasi performa komputasi GPU<br>
-            • TK5: Perbandingan dengan metode referensi
-        </div>
-        
-        <button onclick="document.getElementById('welcome-popout').style.display='none'" style="margin-top: 20px; padding: 12px 24px; background: #2563eb; color: white; border: none; border-radius: 4px; cursor: pointer; font-weight: 600; width: 100%;">Mulai Eksplorasi</button>
-    </div>
-    
-    <script>
-        // Auto-hide after 20 seconds
-        setTimeout(function() {
-            var popup = document.getElementById('welcome-popout');
-            if (popup) popup.style.display = 'none';
-        }, 20000);
-    </script>
-    
     <div class="container">
         <!-- Header -->
         <header class="header">
@@ -62,7 +23,7 @@
         <div class="main">
             <!-- Left Panel: Input & Controls -->
             <div class="panel left-panel">
-                <h2>Input & Parameters</h2>
+                <h2>Material Parameters</h2>
                 
                 <!-- File Upload -->
                 <div class="control-group">
@@ -127,6 +88,23 @@
                     <button id="reset-params" class="btn btn-secondary">Reset Parameters</button>
                 </div>
 
+                <div class="control-group">
+                    <h3>Proxy Geometry</h3>
+                    <div class="geometry-toggle">
+                        <button id="geometry-sphere" class="btn btn-primary geometry-btn is-active">Sphere</button>
+                        <button id="geometry-cube" class="btn btn-secondary geometry-btn">Cube</button>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <h3>Research Figure Export</h3>
+                    <button id="export-comparison-figure" class="btn btn-primary">Export Comparison Figure</button>
+                    <button id="export-convergence-chart" class="btn btn-primary">Export Convergence Chart</button>
+                    <button id="export-viewer-screenshot" class="btn btn-primary">Export Viewer Screenshot</button>
+                    <button id="export-pipeline-diagram" class="btn btn-secondary">Export Pipeline Diagram</button>
+                    <button id="export-experiment-figure" class="btn btn-secondary">Export Experiment Figure</button>
+                </div>
+
                 <!-- Progress -->
                 <div class="progress-section" id="progress-section" style="display: none;">
                     <div class="progress-bar">
@@ -138,14 +116,33 @@
 
             <!-- Center Panel: 3D Preview -->
             <div class="panel center-panel">
-                <h2>3D Material Preview</h2>
+                <h2>3D BRDF Visualization</h2>
                 <div id="canvas-container" class="canvas-container"></div>
-                <p class="help-text">Drag to rotate | Scroll to zoom | Space to toggle auto-rotate</p>
+                <div class="viewer-caption">
+                    <p class="help-text">Drag to rotate | Scroll to zoom | Space to toggle auto-rotate</p>
+                    <p class="viewer-mode-label">Proxy geometry: <span id="geometry-mode-label">Sphere</span></p>
+                </div>
             </div>
             <!--  -->
             <!-- Right Panel: Analysis & Comparison -->
             <div class="panel right-panel">
-                <h2>Analysis & Results</h2>
+                <h2>Optimization Analysis</h2>
+
+                <div class="status-section">
+                    <h3>Optimization Status</h3>
+                    <div class="metric-item">
+                        <span>Iteration:</span>
+                        <span id="status-iteration" class="metric-value">0 / 0</span>
+                    </div>
+                    <div class="metric-item">
+                        <span>Loss:</span>
+                        <span id="status-loss" class="metric-value">--</span>
+                    </div>
+                    <div class="metric-item">
+                        <span>Time:</span>
+                        <span id="status-time" class="metric-value">0.00 s</span>
+                    </div>
+                </div>
                 
                 <!-- Metrics -->
                 <div class="metrics-section">
@@ -202,10 +199,20 @@
                 <!-- Loss Curve -->
                 <div class="chart-section">
                     <h3>
-                        Optimization Curve
+                        Optimization Convergence
                         <button class="info-btn" data-term="optimization-curve" aria-label="Learn about optimization curve">?</button>
                     </h3>
-                    <canvas id="loss-chart"></canvas>
+                    <div class="chart-grid">
+                        <div class="chart-card">
+                            <canvas id="loss-chart"></canvas>
+                        </div>
+                        <div class="chart-card">
+                            <canvas id="roughness-chart"></canvas>
+                        </div>
+                        <div class="chart-card">
+                            <canvas id="metallic-chart"></canvas>
+                        </div>
+                    </div>
                 </div>
 
                 <!-- Export -->
@@ -238,8 +245,8 @@
     </div>
 
     <!-- Scripts -->
-    <script src="js/main.js"></script>
     <script src="js/renderer.js"></script>
+    <script src="js/main.js"></script>
     <script src="js/popout.js"></script>
     
     <!-- DIRECT INFO BUTTON HANDLER -->
