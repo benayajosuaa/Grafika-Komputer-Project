@@ -1,26 +1,97 @@
-// Three.js Renderer for Material Preview
+function clamp01(value) {
+    return Math.max(0, Math.min(1, value));
+}
 
-class ThreeJSRenderer {
+const RENDER_MODE = {
+    lightingOnly: 0,
+    textureOnly: 1,
+    lightingAndTexture: 2
+};
+
+const VERTEX_SHADER = `
+    varying vec3 vWorldPosition;
+    varying vec3 vNormal;
+    varying vec2 vUV;
+
+    void main() {
+        vUV = uv;
+        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+        vWorldPosition = worldPosition.xyz;
+        vNormal = normalize(normalMatrix * normal);
+        gl_Position = projectionMatrix * viewMatrix * worldPosition;
+    }
+`;
+
+const FRAGMENT_SHADER = `
+    uniform vec3 lightPosition;
+    uniform vec3 lightColor;
+    uniform float ka;
+    uniform float kd;
+    uniform float ks;
+    uniform float shininess;
+    uniform vec3 baseColor;
+    uniform sampler2D uTexture;
+    uniform float useLightingWeight;
+    uniform float useTextureWeight;
+
+    varying vec3 vWorldPosition;
+    varying vec3 vNormal;
+    varying vec2 vUV;
+
+    void main() {
+        vec3 n = normalize(vNormal);
+        vec3 l = normalize(lightPosition - vWorldPosition);
+        vec3 v = normalize(cameraPosition - vWorldPosition);
+        vec3 r = reflect(-l, n);
+
+        float diffuseTerm = max(dot(n, l), 0.0);
+        float specularTerm = 0.0;
+        if (diffuseTerm > 0.0) {
+            specularTerm = pow(max(dot(v, r), 0.0), shininess);
+        }
+
+        vec3 ambient = ka * lightColor;
+        vec3 diffuse = kd * lightColor * diffuseTerm;
+        vec3 specular = ks * lightColor * specularTerm;
+        vec3 lighting = ambient + diffuse + specular;
+
+        vec3 texColor = texture2D(uTexture, vUV).rgb;
+        vec3 shadedBase = mix(vec3(1.0), lighting, useLightingWeight);
+        vec3 texturedBase = mix(vec3(1.0), texColor, useTextureWeight);
+        vec3 finalColor = shadedBase * texturedBase * baseColor;
+
+        gl_FragColor = vec4(finalColor, 1.0);
+    }
+`;
+
+export class ThreeJSRenderer {
     constructor(containerId) {
         this.container = document.getElementById(containerId);
 
-        // Safety check
         if (!this.container) {
-            console.error(`Container element with ID "${containerId}" not found`);
-            return;
+            throw new Error(`Container element with ID "${containerId}" not found`);
         }
 
-        this.width = this.container.clientWidth;
-        this.height = this.container.clientHeight;
+        this.width = this.container.clientWidth || 640;
+        this.height = this.container.clientHeight || 640;
         this.currentGeometryMode = 'sphere';
+        this.currentRenderMode = 'lightingAndTexture';
         this.activeMesh = null;
         this.autoRotate = false;
         this.isTouchDevice = 'ontouchstart' in window;
         this.controls = null;
+        this.frameTimes = [];
+        this.lastFrameTimestamp = performance.now();
+        this.lastRenderTimeMs = 0;
+        this.textureLoader = new THREE.TextureLoader();
 
         this.scene = new THREE.Scene();
         this.camera = new THREE.PerspectiveCamera(75, this.width / this.height, 0.1, 1000);
-        this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, preserveDrawingBuffer: true });
+        this.renderer = new THREE.WebGLRenderer({
+            antialias: true,
+            alpha: true,
+            preserveDrawingBuffer: true
+        });
 
         this.renderer.setSize(this.width, this.height);
         this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -29,19 +100,15 @@ class ThreeJSRenderer {
         this.canvas = this.renderer.domElement;
         this.canvas.style.touchAction = 'none';
 
-        // Camera setup
-        this.camera.position.z = 2.8;
+        this.camera.position.set(0, 0, 2.8);
 
-        // Lighting
-        const ambientLight = new THREE.AmbientLight(0xffffff, 0.6);
-        this.scene.add(ambientLight);
-
-        this.directionalLight = new THREE.DirectionalLight(0xffffff, 1.2);
-        this.directionalLight.position.set(3, 4, 3);
-        this.scene.add(this.directionalLight);
+        this.lightState = {
+            position: new THREE.Vector3(3, 4, 3),
+            color: new THREE.Color(0xffffff)
+        };
 
         this.lightArrow = new THREE.ArrowHelper(
-            this.directionalLight.position.clone().normalize(),
+            this.lightState.position.clone().normalize(),
             new THREE.Vector3(0, 0, 0),
             2.2,
             0xff4d4f,
@@ -50,40 +117,73 @@ class ThreeJSRenderer {
         );
         this.scene.add(this.lightArrow);
 
-        const fillLight = new THREE.DirectionalLight(0xffffff, 0.4);
-        fillLight.position.set(-2, 2, 2);
-        this.scene.add(fillLight);
-
         this.material = this.createMaterial();
         this.setGeometryMode('sphere');
 
         this.updateInteractionHint();
         this.setupControls();
         this.setupResizeHandler();
+        this.renderFrame();
         this.animate();
     }
 
+    createCheckerTexture() {
+        const size = 256;
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const context = canvas.getContext('2d');
+        const cells = 8;
+        const cellSize = size / cells;
+
+        for (let y = 0; y < cells; y += 1) {
+            for (let x = 0; x < cells; x += 1) {
+                context.fillStyle = (x + y) % 2 === 0 ? '#e2e8f0' : '#475569';
+                context.fillRect(x * cellSize, y * cellSize, cellSize, cellSize);
+            }
+        }
+
+        const texture = new THREE.CanvasTexture(canvas);
+        texture.wrapS = THREE.RepeatWrapping;
+        texture.wrapT = THREE.RepeatWrapping;
+        texture.minFilter = THREE.LinearMipmapLinearFilter;
+        texture.magFilter = THREE.LinearFilter;
+        texture.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+        texture.needsUpdate = true;
+        return texture;
+    }
+
     createMaterial() {
-        return new THREE.MeshStandardMaterial({
-            color: 0x808080,
-            metalness: 0.0,
-            roughness: 0.5,
-            envMapIntensity: 1.0
+        const defaultTexture = this.createCheckerTexture();
+
+        this.uniforms = {
+            lightPosition: { value: this.lightState.position.clone() },
+            lightColor: { value: this.lightState.color.clone() },
+            ka: { value: 0.25 },
+            kd: { value: 0.75 },
+            ks: { value: 0.35 },
+            shininess: { value: 24.0 },
+            baseColor: { value: new THREE.Color(0.8, 0.8, 0.8) },
+            uTexture: { value: defaultTexture },
+            useLightingWeight: { value: 1.0 },
+            useTextureWeight: { value: 1.0 }
+        };
+
+        return new THREE.ShaderMaterial({
+            uniforms: this.uniforms,
+            vertexShader: VERTEX_SHADER,
+            fragmentShader: FRAGMENT_SHADER
         });
     }
 
     createProxyMesh(mode) {
         if (mode === 'cube') {
-            return new THREE.Mesh(
-                new THREE.BoxGeometry(1.6, 1.6, 1.6),
-                this.material
-            );
+            const geometry = new THREE.BoxGeometry(1.6, 1.6, 1.6, 1, 1, 1);
+            return new THREE.Mesh(geometry, this.material);
         }
 
-        return new THREE.Mesh(
-            new THREE.SphereGeometry(1, 64, 64),
-            this.material
-        );
+        const geometry = new THREE.SphereGeometry(1, 96, 96);
+        return new THREE.Mesh(geometry, this.material);
     }
 
     setGeometryMode(mode = 'sphere') {
@@ -101,28 +201,70 @@ class ThreeJSRenderer {
         this.activeMesh.rotation.x = -0.2;
         this.activeMesh.rotation.y = 0.5;
         this.scene.add(this.activeMesh);
+        this.renderFrame();
+    }
+
+    setRenderMode(mode = 'lightingAndTexture') {
+        const nextMode = RENDER_MODE[mode] != null ? mode : 'lightingAndTexture';
+        this.currentRenderMode = nextMode;
+
+        const lightingWeight = nextMode === 'textureOnly' ? 0.0 : 1.0;
+        const textureWeight = nextMode === 'lightingOnly' ? 0.0 : 1.0;
+        this.uniforms.useLightingWeight.value = lightingWeight;
+        this.uniforms.useTextureWeight.value = textureWeight;
+        this.renderFrame();
+    }
+
+    loadTexture(textureSource) {
+        return new Promise((resolve, reject) => {
+            this.textureLoader.load(
+                textureSource,
+                (texture) => {
+                    texture.wrapS = THREE.RepeatWrapping;
+                    texture.wrapT = THREE.RepeatWrapping;
+                    texture.minFilter = THREE.LinearMipmapLinearFilter;
+                    texture.magFilter = THREE.LinearFilter;
+                    texture.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+                    texture.needsUpdate = true;
+                    this.uniforms.uTexture.value = texture;
+                    this.renderFrame();
+                    resolve(texture);
+                },
+                undefined,
+                (error) => reject(error)
+            );
+        });
     }
 
     updateMaterial(params) {
         if (!params || !this.material) {
-            console.warn('Invalid parameters or material not initialized');
             return;
         }
 
-        try {
-            const [r, g, b] = params.albedo;
-            this.material.color = new THREE.Color(r, g, b);
-            this.material.roughness = params.roughness;
-            this.material.metalness = params.metallic;
-            this.material.needsUpdate = true;
-        } catch (error) {
-            console.error('Error updating material:', error);
-        }
+        const [r, g, b] = params.albedo;
+        const roughness = clamp01(params.roughness);
+        const metallic = clamp01(params.metallic);
+        this.uniforms.baseColor.value.setRGB(clamp01(r), clamp01(g), clamp01(b));
+
+        // Keep the visualization Phong-style while letting BRDF parameters steer it.
+        this.uniforms.ka.value = 0.18 + 0.22 * (1.0 - metallic);
+        this.uniforms.kd.value = 0.55 + 0.35 * (1.0 - metallic);
+        this.uniforms.ks.value = 0.15 + 0.7 * metallic;
+        this.uniforms.shininess.value = 8.0 + (1.0 - roughness) * 120.0;
+    }
+
+    getShaderSources() {
+        return {
+            vertexShader: VERTEX_SHADER,
+            fragmentShader: FRAGMENT_SHADER
+        };
     }
 
     updateInteractionHint() {
         const helpText = document.querySelector('.help-text');
-        if (!helpText) return;
+        if (!helpText) {
+            return;
+        }
 
         helpText.textContent = this.isTouchDevice
             ? 'Drag to rotate | Pinch to zoom | Two fingers to pan'
@@ -131,11 +273,11 @@ class ThreeJSRenderer {
 
     setupResizeHandler() {
         window.addEventListener('resize', () => {
-            if (!this.container || !this.renderer || !this.camera) return;
-
             const width = this.container.clientWidth;
             const height = this.container.clientHeight;
-            if (!width || !height) return;
+            if (!width || !height) {
+                return;
+            }
 
             this.width = width;
             this.height = height;
@@ -143,6 +285,7 @@ class ThreeJSRenderer {
             this.camera.updateProjectionMatrix();
             this.renderer.setSize(width, height);
             this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+            this.renderFrame();
         });
     }
 
@@ -161,10 +304,13 @@ class ThreeJSRenderer {
             };
             this.controls.update();
 
-            window.addEventListener('keydown', (e) => {
-                if (this.isTouchDevice) return;
-                if (e.code === 'Space') {
-                    e.preventDefault();
+            window.addEventListener('keydown', (event) => {
+                if (this.isTouchDevice) {
+                    return;
+                }
+
+                if (event.code === 'Space') {
+                    event.preventDefault();
                     this.autoRotate = !this.autoRotate;
                     this.controls.autoRotate = this.autoRotate;
                 }
@@ -174,151 +320,162 @@ class ThreeJSRenderer {
 
         let isDragging = false;
         let previousMousePosition = { x: 0, y: 0 };
-        let touchMode = null;
-        let previousTouchCenter = null;
-        let previousTouchDistance = 0;
 
-        this.renderer.domElement.addEventListener('mousedown', (e) => {
+        this.renderer.domElement.addEventListener('mousedown', (event) => {
             isDragging = true;
-            previousMousePosition = { x: e.clientX, y: e.clientY };
+            previousMousePosition = { x: event.clientX, y: event.clientY };
         });
 
-        this.renderer.domElement.addEventListener('mousemove', (e) => {
-            if (!isDragging || !this.activeMesh) return;
+        this.renderer.domElement.addEventListener('mousemove', (event) => {
+            if (!isDragging || !this.activeMesh) {
+                return;
+            }
 
-            const deltaX = e.clientX - previousMousePosition.x;
-            const deltaY = e.clientY - previousMousePosition.y;
-
-            this.activeMesh.rotation.x -= deltaY * 0.01;
+            const deltaX = event.clientX - previousMousePosition.x;
+            const deltaY = event.clientY - previousMousePosition.y;
+            this.activeMesh.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.activeMesh.rotation.x - deltaY * 0.01));
             this.activeMesh.rotation.y += deltaX * 0.01;
-            this.activeMesh.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.activeMesh.rotation.x));
-
-            previousMousePosition = { x: e.clientX, y: e.clientY };
+            previousMousePosition = { x: event.clientX, y: event.clientY };
         });
 
-        this.renderer.domElement.addEventListener('mouseup', () => {
-            isDragging = false;
+        ['mouseup', 'mouseleave'].forEach((eventName) => {
+            this.renderer.domElement.addEventListener(eventName, () => {
+                isDragging = false;
+            });
         });
 
-        this.renderer.domElement.addEventListener('mouseleave', () => {
-            isDragging = false;
-        });
-
-        this.renderer.domElement.addEventListener('wheel', (e) => {
-            e.preventDefault();
-            this.camera.position.z += e.deltaY * 0.001;
-            this.camera.position.z = Math.max(1.4, Math.min(10, this.camera.position.z));
+        this.renderer.domElement.addEventListener('wheel', (event) => {
+            event.preventDefault();
+            this.camera.position.z = Math.max(1.4, Math.min(10, this.camera.position.z + event.deltaY * 0.001));
+            this.renderFrame();
         }, { passive: false });
-
-        this.renderer.domElement.addEventListener('touchstart', (e) => {
-            if (!this.activeMesh) return;
-
-            if (e.touches.length === 1) {
-                touchMode = 'rotate';
-                previousMousePosition = {
-                    x: e.touches[0].clientX,
-                    y: e.touches[0].clientY
-                };
-            } else if (e.touches.length === 2) {
-                touchMode = 'dollyPan';
-                previousTouchCenter = this.getTouchCenter(e.touches);
-                previousTouchDistance = this.getTouchDistance(e.touches);
-            }
-        }, { passive: true });
-
-        this.renderer.domElement.addEventListener('touchmove', (e) => {
-            if (!this.activeMesh) return;
-
-            if (e.touches.length === 1 && touchMode === 'rotate') {
-                e.preventDefault();
-
-                const touch = e.touches[0];
-                const deltaX = touch.clientX - previousMousePosition.x;
-                const deltaY = touch.clientY - previousMousePosition.y;
-
-                this.activeMesh.rotation.x -= deltaY * 0.01;
-                this.activeMesh.rotation.y += deltaX * 0.01;
-                this.activeMesh.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.activeMesh.rotation.x));
-
-                previousMousePosition = { x: touch.clientX, y: touch.clientY };
-                return;
-            }
-
-            if (e.touches.length === 2) {
-                e.preventDefault();
-
-                const currentCenter = this.getTouchCenter(e.touches);
-                const currentDistance = this.getTouchDistance(e.touches);
-
-                if (previousTouchDistance) {
-                    const zoomDelta = (previousTouchDistance - currentDistance) * 0.01;
-                    this.camera.position.z = Math.max(1.4, Math.min(10, this.camera.position.z + zoomDelta));
-                }
-
-                if (previousTouchCenter) {
-                    const panX = (currentCenter.x - previousTouchCenter.x) / this.width;
-                    const panY = (currentCenter.y - previousTouchCenter.y) / this.height;
-                    this.camera.position.x -= panX * 3;
-                    this.camera.position.y += panY * 3;
-                }
-
-                previousTouchCenter = currentCenter;
-                previousTouchDistance = currentDistance;
-                touchMode = 'dollyPan';
-            }
-        }, { passive: false });
-
-        this.renderer.domElement.addEventListener('touchend', (e) => {
-            if (e.touches.length === 1) {
-                touchMode = 'rotate';
-                previousMousePosition = {
-                    x: e.touches[0].clientX,
-                    y: e.touches[0].clientY
-                };
-                previousTouchCenter = null;
-                previousTouchDistance = 0;
-                return;
-            }
-
-            if (e.touches.length === 0) {
-                touchMode = null;
-                previousTouchCenter = null;
-                previousTouchDistance = 0;
-            }
-        });
-
-        window.addEventListener('keydown', (e) => {
-            if (this.isTouchDevice) return;
-            if (e.code === 'Space') {
-                e.preventDefault();
-                this.autoRotate = !this.autoRotate;
-            }
-        });
     }
 
-    getTouchCenter(touches) {
+    setLightingVariation(type = 'default') {
+        const profiles = {
+            default: {
+                lightColor: 0xffffff,
+                lightPosition: [3, 4, 3]
+            },
+            warm: {
+                lightColor: 0xffe2b8,
+                lightPosition: [3, 4, 2]
+            },
+            cool: {
+                lightColor: 0xcfe8ff,
+                lightPosition: [2, 4, 3]
+            },
+            dim: {
+                lightColor: 0xd7dbe0,
+                lightPosition: [3, 3, 3]
+            },
+            bright: {
+                lightColor: 0xffffff,
+                lightPosition: [3.5, 4.5, 2.5]
+            }
+        };
+
+        const profile = profiles[type] || profiles.default;
+        this.lightState.position.set(...profile.lightPosition);
+        this.lightState.color.set(profile.lightColor);
+        this.uniforms.lightPosition.value.copy(this.lightState.position);
+        this.uniforms.lightColor.value.copy(this.lightState.color);
+        this.lightArrow.setDirection(this.lightState.position.clone().normalize());
+    }
+
+    renderFrame() {
+        const start = performance.now();
+        this.renderer.render(this.scene, this.camera);
+        this.lastRenderTimeMs = performance.now() - start;
+        return this.lastRenderTimeMs;
+    }
+
+    captureNormalizedPixels(width = 64, height = 64) {
+        const targetCanvas = document.createElement('canvas');
+        targetCanvas.width = width;
+        targetCanvas.height = height;
+        const context = targetCanvas.getContext('2d', { willReadFrequently: true });
+        context.drawImage(this.canvas, 0, 0, width, height);
+        const imageData = context.getImageData(0, 0, width, height);
+        const pixels = [];
+
+        for (let index = 0; index < imageData.data.length; index += 4) {
+            pixels.push(
+                imageData.data[index] / 255,
+                imageData.data[index + 1] / 255,
+                imageData.data[index + 2] / 255
+            );
+        }
+
+        return pixels;
+    }
+
+    async renderSnapshot(parameters, options = {}) {
+        const width = options.width || 64;
+        const height = options.height || width;
+        const previousAutoRotate = this.autoRotate;
+        const previousRenderMode = this.currentRenderMode;
+
+        this.autoRotate = false;
+        if (this.controls) {
+            this.controls.autoRotate = false;
+            this.controls.update();
+        }
+
+        if (options.lightingType) {
+            this.setLightingVariation(options.lightingType);
+        }
+        if (options.renderMode) {
+            this.setRenderMode(options.renderMode);
+        }
+
+        this.updateMaterial(parameters);
+        const renderTimeMs = this.renderFrame();
+        const pixels = this.captureNormalizedPixels(width, height);
+
+        this.autoRotate = previousAutoRotate;
+        if (this.controls) {
+            this.controls.autoRotate = previousAutoRotate;
+        }
+        this.setRenderMode(previousRenderMode);
+
         return {
-            x: (touches[0].clientX + touches[1].clientX) / 2,
-            y: (touches[0].clientY + touches[1].clientY) / 2
+            pixels,
+            renderTimeMs
         };
     }
 
-    getTouchDistance(touches) {
-        const deltaX = touches[0].clientX - touches[1].clientX;
-        const deltaY = touches[0].clientY - touches[1].clientY;
-        return Math.hypot(deltaX, deltaY);
+    profilePerformance() {
+        const averageFrameTime = this.frameTimes.length > 0
+            ? this.frameTimes.reduce((acc, value) => acc + value, 0) / this.frameTimes.length
+            : this.lastRenderTimeMs;
+
+        return {
+            avg_frame_time_ms: averageFrameTime,
+            fps: averageFrameTime > 0 ? 1000 / averageFrameTime : null,
+            last_render_time_ms: this.lastRenderTimeMs
+        };
     }
 
     animate() {
         requestAnimationFrame(() => this.animate());
+        const now = performance.now();
+        const delta = now - this.lastFrameTimestamp;
+        this.lastFrameTimestamp = now;
 
         if (this.controls) {
-            this.controls.autoRotate = this.autoRotate;
             this.controls.update();
         } else if (this.autoRotate && this.activeMesh) {
             this.activeMesh.rotation.y += 0.01;
         }
 
-        this.renderer.render(this.scene, this.camera);
+        this.renderFrame();
+
+        if (delta > 0 && Number.isFinite(delta)) {
+            this.frameTimes.push(delta);
+            if (this.frameTimes.length > 120) {
+                this.frameTimes.shift();
+            }
+        }
     }
 }
