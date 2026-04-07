@@ -222,6 +222,10 @@ export function detectFailure(logs, parameters) {
     const firstLoss = logs[0].loss;
     const lastLoss = logs[logs.length - 1].loss;
 
+    if (!Number.isFinite(firstLoss) || !Number.isFinite(lastLoss) || logs.some((entry) => !Number.isFinite(entry.loss))) {
+        reasons.push('nan_loss');
+    }
+
     const consecutiveIncreases = logs.slice(1).reduce((count, entry, index) => {
         const previousLoss = logs[index].loss;
         return entry.loss > previousLoss ? count + 1 : 0;
@@ -274,9 +278,12 @@ export function computeFinalMetrics({
     return {
         final_loss: finalLoss,
         initial_loss: initialLoss,
+        loss_drop_percentage: initialLoss > 0 ? ((initialLoss - finalLoss) / initialLoss) * 100 : 0,
         loss_reduction_ratio: initialLoss > 0 ? (initialLoss - finalLoss) / initialLoss : 0,
         total_iterations: totalIterations,
+        total_runtime_ms: totalTimeMs,
         total_time_ms: totalTimeMs,
+        avg_runtime_per_iteration: avgTimePerIteration,
         avg_iteration_time: avgTimePerIteration,
         avg_time_per_iteration: avgTimePerIteration,
         convergence_iteration: convergence.convergence_iteration,
@@ -299,6 +306,7 @@ export function aggregateBatchMetrics(results) {
         mean_loss: mean(losses),
         std_loss: std(losses),
         mean_iterations: mean(iterations),
+        mean_runtime: mean(times),
         mean_time: mean(times),
         success_rate: results.length > 0 ? successCount / results.length : 0
     };

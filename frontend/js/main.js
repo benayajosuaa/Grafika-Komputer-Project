@@ -9,6 +9,7 @@ class BRDFApp {
         this.currentImageId = null;
         this.currentExperimentResult = null;
         this.currentAblationResult = null;
+        this.currentBatchResult = null;
         this.parameters = {
             albedo: [0.5, 0.5, 0.5],
             roughness: 0.5,
@@ -33,6 +34,8 @@ class BRDFApp {
         this.initializeCharts();
         this.updateParameterDisplay();
         this.updateMetricsDisplay();
+        this.updateSummaryMetricsPanel(null);
+        this.updateAblationPanel(null);
         this.updateOptimizationStatus(0, 0, null, 0);
         this.updateSystemInfo();
         this.startPerformanceProbe();
@@ -50,6 +53,12 @@ class BRDFApp {
             setRenderMode: (mode) => this.renderer.setRenderMode(mode),
             loadTexture: (textureSource) => this.renderer.loadTexture(textureSource),
             getShaderSources: () => this.renderer.getShaderSources()
+        };
+        window.experimentUiApi = {
+            runAblationAndDisplay: (imageId = this.currentImageId, config = {}) => this.runAblationAndDisplay(imageId, config),
+            exportExperimentResults: () => this.exportExperimentResults(),
+            runBatchExperiment: (imageList, config = {}) => this.runBatchExperiment(imageList, config),
+            getConvergenceGraphData: () => this.getConvergenceGraphData()
         };
         window.researchExamples = {
             runExampleExperiment: async () => {
@@ -204,6 +213,30 @@ class BRDFApp {
         this.charts.loss = this.createLineChart('loss-chart', 'Loss', '#2563eb', 'Loss', true);
         this.charts.roughness = this.createLineChart('roughness-chart', 'Gradient Norm', '#d97706', 'Gradient Norm');
         this.charts.metallic = this.createLineChart('metallic-chart', 'Metallic', '#059669', 'Metallic');
+
+        if (this.charts.loss) {
+            this.charts.loss.data.datasets = [
+                {
+                    label: 'Heuristic',
+                    data: [],
+                    borderColor: '#2563eb',
+                    borderWidth: 2,
+                    tension: 0.25,
+                    fill: false,
+                    pointRadius: 0
+                },
+                {
+                    label: 'Random',
+                    data: [],
+                    borderColor: '#dc2626',
+                    borderWidth: 2,
+                    tension: 0.25,
+                    fill: false,
+                    pointRadius: 0
+                }
+            ];
+            this.charts.loss.update('none');
+        }
     }
 
     updateSystemInfo() {
@@ -391,6 +424,8 @@ class BRDFApp {
         }
 
         this.isOptimizing = true;
+        this.currentAblationResult = null;
+        this.updateAblationPanel(null);
         this.toggleOptimizationUi(true);
         const startedAt = performance.now();
 
@@ -433,10 +468,11 @@ class BRDFApp {
             this.gradientHistory = result.convergence_curve.gradient_norm_vs_iteration;
             this.updateConvergenceCharts(result.logs);
             this.updateMetricsDisplay(result.metrics);
+            this.updateSummaryMetricsPanel(result.metrics);
             this.syncSlidersToParameters();
             this.syncRenderedImagePreview();
 
-            this.currentAblationResult = await this.experimentRunner.runAblation(this.currentImageId, this.buildExperimentConfig('heuristic'));
+            await this.runAblationAndDisplay(this.currentImageId, this.buildExperimentConfig('heuristic'));
             this.showMessage(`Experiment complete. Final loss: ${result.metrics.final_loss.toFixed(6)}`);
         } catch (error) {
             console.error(error);
@@ -482,11 +518,14 @@ class BRDFApp {
         this.gradientHistory = [];
         this.currentExperimentResult = null;
         this.currentAblationResult = null;
+        this.currentBatchResult = null;
         this.syncSlidersToParameters();
         this.updateParameterDisplay();
         this.updatePreview();
         this.updateConvergenceCharts([]);
         this.updateMetricsDisplay();
+        this.updateSummaryMetricsPanel(null);
+        this.updateAblationPanel(null);
         this.updateOptimizationStatus(0, 0, null, 0);
     }
 
@@ -504,14 +543,18 @@ class BRDFApp {
     }
 
     updateConvergenceCharts(logs = this.currentExperimentResult?.logs || []) {
-        const labels = logs.map((entry) => entry.iteration);
-        const losses = logs.map((entry) => entry.loss);
-        const gradientNorms = logs.map((entry) => entry.gradient_norm);
-        const metallicHistory = logs.map((entry) => entry.parameters.metallic);
+        const heuristicLogs = Array.isArray(logs) ? logs : [];
+        const randomLogs = this.currentAblationResult?.runs?.random?.logs || [];
+        const labels = this.getConvergenceGraphData().iterations;
+        const heuristicLosses = heuristicLogs.map((entry) => entry.loss);
+        const randomLosses = randomLogs.map((entry) => entry.loss);
+        const gradientNorms = heuristicLogs.map((entry) => entry.gradient_norm);
+        const metallicHistory = heuristicLogs.map((entry) => entry.parameters.metallic);
 
         if (this.charts.loss) {
             this.charts.loss.data.labels = labels;
-            this.charts.loss.data.datasets[0].data = losses;
+            this.charts.loss.data.datasets[0].data = heuristicLosses;
+            this.charts.loss.data.datasets[1].data = randomLosses;
             this.charts.loss.update('none');
         }
 
@@ -558,6 +601,94 @@ class BRDFApp {
         updateElement('metric-loss', metrics.final_loss.toFixed(6));
     }
 
+    updateSummaryMetricsPanel(metrics = this.currentExperimentResult?.metrics || null) {
+        const updateElement = (id, value) => {
+            const element = document.getElementById(id);
+            if (element) {
+                element.textContent = value;
+            }
+        };
+
+        if (!metrics) {
+            updateElement('summary-converged', '--');
+            updateElement('summary-loss-drop', '--');
+            updateElement('summary-runtime', '--');
+            updateElement('summary-avg-iter', '--');
+            return;
+        }
+
+        updateElement('summary-converged', metrics.convergence_iteration == null ? 'No convergence' : `${metrics.convergence_iteration}`);
+        updateElement('summary-loss-drop', `${metrics.loss_drop_percentage.toFixed(2)}%`);
+        updateElement('summary-runtime', `${metrics.total_runtime_ms.toFixed(2)} ms`);
+        updateElement('summary-avg-iter', `${metrics.avg_runtime_per_iteration.toFixed(2)} ms`);
+    }
+
+    updateAblationPanel(ablationResult = this.currentAblationResult) {
+        const setText = (id, value) => {
+            const element = document.getElementById(id);
+            if (element) {
+                element.textContent = value;
+            }
+        };
+
+        if (!ablationResult) {
+            [
+                'heuristic-final-loss', 'heuristic-iterations', 'heuristic-runtime',
+                'random-final-loss', 'random-iterations', 'random-runtime',
+                'ablation-loss-improvement', 'ablation-iteration-reduction', 'ablation-speedup'
+            ].forEach((id) => setText(id, '--'));
+            return;
+        }
+
+        const heuristic = ablationResult.heuristic;
+        const random = ablationResult.random;
+        const comparison = ablationResult.comparison;
+        const lossImprovementPercentage = comparison.loss_improvement_ratio * 100;
+        const iterationReductionPercentage = random.total_iterations > 0
+            ? ((random.total_iterations - heuristic.total_iterations) / random.total_iterations) * 100
+            : 0;
+        const speedupPercentage = (comparison.runtime_speedup - 1) * 100;
+
+        setText('heuristic-final-loss', heuristic.final_loss.toFixed(6));
+        setText('heuristic-iterations', `${heuristic.total_iterations}`);
+        setText('heuristic-runtime', `${heuristic.total_runtime_ms.toFixed(2)} ms`);
+        setText('random-final-loss', random.final_loss.toFixed(6));
+        setText('random-iterations', `${random.total_iterations}`);
+        setText('random-runtime', `${random.total_runtime_ms.toFixed(2)} ms`);
+        setText('ablation-loss-improvement', `${lossImprovementPercentage.toFixed(2)}%`);
+        setText('ablation-iteration-reduction', `${iterationReductionPercentage.toFixed(2)}%`);
+        setText('ablation-speedup', `${speedupPercentage.toFixed(2)}%`);
+    }
+
+    getConvergenceGraphData() {
+        const heuristicCurve = this.currentAblationResult?.runs?.heuristic?.convergence_curve?.loss_vs_iteration || this.currentExperimentResult?.convergence_curve?.loss_vs_iteration || [];
+        const randomCurve = this.currentAblationResult?.runs?.random?.convergence_curve?.loss_vs_iteration || [];
+        const maxLength = Math.max(heuristicCurve.length, randomCurve.length);
+        return {
+            iterations: Array.from({ length: maxLength }, (_, index) => index + 1),
+            heuristic: heuristicCurve,
+            random: randomCurve
+        };
+    }
+
+    async runAblationAndDisplay(imageId = this.currentImageId, config = this.buildExperimentConfig('heuristic')) {
+        if (!imageId) {
+            throw new Error('Image is required for ablation');
+        }
+
+        const ablationResult = await this.experimentRunner.runAblation(imageId, config);
+        this.currentAblationResult = ablationResult;
+        this.updateAblationPanel(ablationResult);
+        this.updateConvergenceCharts(this.currentExperimentResult?.logs || ablationResult.runs.heuristic.logs);
+        return ablationResult;
+    }
+
+    async runBatchExperiment(imageList, config = this.buildExperimentConfig('heuristic')) {
+        const batchResult = await this.experimentRunner.runBatchExperiment(imageList, config);
+        this.currentBatchResult = batchResult;
+        return batchResult;
+    }
+
     exportExperimentResults(format = 'json') {
         if (!this.currentExperimentResult) {
             alert('Run an experiment before exporting results.');
@@ -565,9 +696,7 @@ class BRDFApp {
         }
 
         const content = this.experimentRunner.exportExperimentResults(this.currentExperimentResult, format);
-        const filename = format === 'csv'
-            ? `experiment_results_${Date.now()}.csv`
-            : `experiment_results_${Date.now()}.json`;
+        const filename = format === 'csv' ? 'experiment_result.csv' : 'experiment_result.json';
 
         this.experimentRunner.exporter.downloadTextFile(
             content,
@@ -575,6 +704,7 @@ class BRDFApp {
             format === 'csv' ? 'text/csv' : 'application/json'
         );
         this.showMessage(`Exported ${format.toUpperCase()} results.`);
+        return content;
     }
 
     exportBatchCsv() {

@@ -317,7 +317,10 @@ export class ExperimentRunner {
                     ? (random.metrics.final_loss - heuristic.metrics.final_loss) / random.metrics.final_loss
                     : 0,
                 iteration_reduction: random.metrics.total_iterations - heuristic.metrics.total_iterations,
-                speedup_ratio: heuristic.metrics.total_time_ms > 0
+                runtime_speedup: heuristic.metrics.total_runtime_ms > 0
+                    ? random.metrics.total_time_ms / heuristic.metrics.total_time_ms
+                    : 0,
+                speedup_ratio: heuristic.metrics.total_runtime_ms > 0
                     ? random.metrics.total_time_ms / heuristic.metrics.total_time_ms
                     : 0,
                 iteration_difference: heuristic.metrics.total_iterations - random.metrics.total_iterations
