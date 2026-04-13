@@ -9,15 +9,74 @@ const RENDER_MODE = {
 };
 
 const VERTEX_SHADER = `
+    uniform float surfaceProfile;
+    uniform float detailScale;
+    uniform float displacementScale;
+    uniform vec2 grainDirection;
+
     varying vec3 vWorldPosition;
+    varying vec3 vLocalPosition;
     varying vec3 vNormal;
     varying vec2 vUV;
+    varying float vDetailMask;
+
+    float hash(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+    }
+
+    float noise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+
+        return mix(
+            mix(hash(i + vec2(0.0, 0.0)), hash(i + vec2(1.0, 0.0)), u.x),
+            mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x),
+            u.y
+        );
+    }
+
+    float fbm(vec2 p) {
+        float value = 0.0;
+        float amplitude = 0.5;
+
+        for (int octave = 0; octave < 4; octave += 1) {
+            value += amplitude * noise(p);
+            p *= 2.03;
+            amplitude *= 0.5;
+        }
+
+        return value;
+    }
 
     void main() {
         vUV = uv;
-        vec4 worldPosition = modelMatrix * vec4(position, 1.0);
+        vec2 scaledUv = uv * detailScale;
+        vec2 grainUv = vec2(
+            dot(scaledUv, normalize(grainDirection + vec2(0.001, 0.001))),
+            dot(scaledUv, normalize(vec2(-grainDirection.y, grainDirection.x) + vec2(0.001, 0.001)))
+        );
+        float fiber = sin(grainUv.x * 10.0) * 0.5 + 0.5;
+        float detailNoise = fbm(scaledUv + position.xy * 0.35);
+        float materialMask = detailNoise;
+
+        if (surfaceProfile < 1.5) {
+            materialMask = mix(detailNoise, fiber, 0.55);
+        } else if (surfaceProfile < 2.5) {
+            materialMask = mix(detailNoise, sin(grainUv.x * 18.0) * 0.5 + 0.5, 0.28);
+        } else if (surfaceProfile < 3.5) {
+            materialMask = mix(detailNoise, sin(grainUv.x * 7.0 + detailNoise * 3.0) * 0.5 + 0.5, 0.45);
+        } else if (surfaceProfile < 4.5) {
+            materialMask = mix(detailNoise, sin(grainUv.x * 14.0) * 0.5 + 0.5, 0.18);
+        }
+
+        float centeredMask = materialMask * 2.0 - 1.0;
+        vec3 displacedPosition = position + normal * centeredMask * displacementScale;
+        vec4 worldPosition = modelMatrix * vec4(displacedPosition, 1.0);
         vWorldPosition = worldPosition.xyz;
+        vLocalPosition = displacedPosition;
         vNormal = normalize(normalMatrix * normal);
+        vDetailMask = materialMask;
         gl_Position = projectionMatrix * viewMatrix * worldPosition;
     }
 `;
@@ -33,13 +92,97 @@ const FRAGMENT_SHADER = `
     uniform sampler2D uTexture;
     uniform float useLightingWeight;
     uniform float useTextureWeight;
+    uniform float surfaceProfile;
+    uniform float detailScale;
+    uniform float detailContrast;
+    uniform float textureRepeat;
+    uniform float sheenStrength;
+    uniform float specularBoost;
+    uniform float bumpIntensity;
+    uniform float albedoInfluence;
+    uniform vec3 sheenTint;
+    uniform vec3 textureMean;
+    uniform vec2 grainDirection;
 
     varying vec3 vWorldPosition;
+    varying vec3 vLocalPosition;
     varying vec3 vNormal;
     varying vec2 vUV;
+    varying float vDetailMask;
+
+    float hash(vec2 p) {
+        return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453123);
+    }
+
+    float noise(vec2 p) {
+        vec2 i = floor(p);
+        vec2 f = fract(p);
+        vec2 u = f * f * (3.0 - 2.0 * f);
+
+        return mix(
+            mix(hash(i + vec2(0.0, 0.0)), hash(i + vec2(1.0, 0.0)), u.x),
+            mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), u.x),
+            u.y
+        );
+    }
+
+    float fbm(vec2 p) {
+        float value = 0.0;
+        float amplitude = 0.5;
+
+        for (int octave = 0; octave < 5; octave += 1) {
+            value += amplitude * noise(p);
+            p *= 2.02;
+            amplitude *= 0.5;
+        }
+
+        return value;
+    }
+
+    vec3 sampleTriplanar(sampler2D textureSampler, vec3 position, vec3 normal, float scale) {
+        vec3 blending = abs(normal);
+        blending = pow(blending, vec3(5.0));
+        blending /= max(blending.x + blending.y + blending.z, 1e-5);
+
+        vec2 xAxisUv = position.yz * scale;
+        vec2 yAxisUv = position.xz * scale;
+        vec2 zAxisUv = position.xy * scale;
+
+        vec3 xSample = texture2D(textureSampler, xAxisUv).rgb;
+        vec3 ySample = texture2D(textureSampler, yAxisUv).rgb;
+        vec3 zSample = texture2D(textureSampler, zAxisUv).rgb;
+
+        return xSample * blending.x + ySample * blending.y + zSample * blending.z;
+    }
 
     void main() {
-        vec3 n = normalize(vNormal);
+        vec3 localPosition = vLocalPosition * 0.85;
+        vec2 baseUv = vUV * detailScale;
+        vec2 triPlanarUv = localPosition.xy * detailScale;
+        vec2 scaledUv = mix(baseUv, triPlanarUv, 0.65);
+        vec2 grainUv = vec2(
+            dot(scaledUv, normalize(grainDirection + vec2(0.001, 0.001))),
+            dot(scaledUv, normalize(vec2(-grainDirection.y, grainDirection.x) + vec2(0.001, 0.001)))
+        );
+        float detailNoise = fbm(scaledUv + localPosition.xy * 0.8);
+        float fiber = sin(grainUv.x * 12.0 + detailNoise * 2.4) * 0.5 + 0.5;
+        float brushed = sin(grainUv.x * 22.0 + detailNoise * 1.8) * 0.5 + 0.5;
+        float pores = smoothstep(0.35, 0.95, fbm(scaledUv * 1.5 + vec2(4.2, 1.7)));
+        float woodGrain = sin(grainUv.x * 6.0 + fbm(grainUv * 0.7) * 5.5) * 0.5 + 0.5;
+        float crossFiber = sin(grainUv.y * 24.0 + detailNoise * 4.0) * 0.5 + 0.5;
+
+        float detailMask = mix(vDetailMask, detailNoise, 0.5);
+        vec3 normalPerturbation = vec3((detailNoise - 0.5) * bumpIntensity, (fiber - 0.5) * bumpIntensity, 0.0);
+
+        if (surfaceProfile < 1.5) {
+            normalPerturbation = vec3((crossFiber - 0.5) * bumpIntensity * 1.4, (fiber - 0.5) * bumpIntensity * 1.8, 0.0);
+        } else if (surfaceProfile < 2.5) {
+            normalPerturbation = vec3((brushed - 0.5) * bumpIntensity * 0.55, (detailNoise - 0.5) * bumpIntensity * 0.35, 0.0);
+        } else if (surfaceProfile < 3.5) {
+            normalPerturbation = vec3((woodGrain - 0.5) * bumpIntensity * 1.4, (detailNoise - 0.5) * bumpIntensity * 0.65, 0.0);
+        }
+
+        vec3 n = normalize(vNormal + normalPerturbation);
         vec3 l = normalize(lightPosition - vWorldPosition);
         vec3 v = normalize(cameraPosition - vWorldPosition);
         vec3 r = reflect(-l, n);
@@ -50,19 +193,82 @@ const FRAGMENT_SHADER = `
             specularTerm = pow(max(dot(v, r), 0.0), shininess);
         }
 
+        vec3 texColor = sampleTriplanar(uTexture, localPosition, n, textureRepeat);
+        vec3 normalizedTexture = clamp(texColor / max(textureMean, vec3(0.08)), 0.0, 2.0);
+        float textureLuma = dot(normalizedTexture, vec3(0.299, 0.587, 0.114));
+        vec3 neutralDetail = vec3(mix(0.72, 1.28, clamp(textureLuma, 0.0, 1.0)));
+        vec3 detailTexture = mix(vec3(1.0), neutralDetail, albedoInfluence);
+        vec3 profileTexture = detailTexture;
+        float profileSpecularBoost = specularBoost;
+        float sheen = 0.0;
+
+        if (surfaceProfile < 1.5) {
+            float weave = mix(detailMask, fiber, 0.65);
+            profileTexture = detailTexture * mix(0.82, 1.12, pow(weave, detailContrast));
+            profileSpecularBoost *= 0.55;
+            sheen = sheenStrength * pow(1.0 - max(dot(n, v), 0.0), 2.2) * mix(0.35, 1.0, weave);
+        } else if (surfaceProfile < 2.5) {
+            float metalBand = mix(detailMask, brushed, 0.5);
+            profileTexture = mix(detailTexture, vec3(dot(detailTexture, vec3(0.299, 0.587, 0.114))), 0.28);
+            profileTexture *= mix(0.9, 1.18, pow(metalBand, max(1.0, detailContrast)));
+            profileSpecularBoost *= 1.35;
+            sheen = sheenStrength * 0.25 * pow(max(dot(v, r), 0.0), 6.0);
+        } else if (surfaceProfile < 3.5) {
+            float grain = mix(detailMask, woodGrain, 0.72);
+            profileTexture = detailTexture * mix(0.84, 1.14, grain);
+            profileSpecularBoost *= 0.82;
+            sheen = sheenStrength * 0.2 * grain;
+        } else if (surfaceProfile < 4.5) {
+            float glossy = mix(detailMask, brushed, 0.35);
+            profileTexture = detailTexture * mix(0.94, 1.08, glossy);
+            profileSpecularBoost *= 1.08;
+            sheen = sheenStrength * 0.3 * pow(max(dot(v, r), 0.0), 4.0);
+        } else {
+            float granular = mix(detailMask, pores, 0.6);
+            profileTexture = detailTexture * mix(0.8, 1.05, granular);
+            profileSpecularBoost *= 0.65;
+            sheen = sheenStrength * 0.15 * granular;
+        }
+
         vec3 ambient = ka * lightColor;
         vec3 diffuse = kd * lightColor * diffuseTerm;
-        vec3 specular = ks * lightColor * specularTerm;
+        vec3 specularTint = mix(vec3(1.0), baseColor, surfaceProfile > 1.5 && surfaceProfile < 2.5 ? 0.35 : 0.18);
+        vec3 specularColor = mix(lightColor, specularTint, clamp(surfaceProfile > 1.5 && surfaceProfile < 2.5 ? 0.55 : 0.08, 0.0, 1.0));
+        vec3 specular = ks * profileSpecularBoost * specularColor * specularTerm;
         vec3 lighting = ambient + diffuse + specular;
-
-        vec3 texColor = texture2D(uTexture, vUV).rgb;
+        lighting += sheen * sheenTint;
         vec3 shadedBase = mix(vec3(1.0), lighting, useLightingWeight);
-        vec3 texturedBase = mix(vec3(1.0), texColor, useTextureWeight);
+        vec3 texturedBase = mix(vec3(1.0), profileTexture, useTextureWeight);
         vec3 finalColor = shadedBase * texturedBase * baseColor;
 
         gl_FragColor = vec4(finalColor, 1.0);
     }
 `;
+
+const SURFACE_PROFILE_ID = {
+    fabric: 1,
+    metal: 2,
+    wood: 3,
+    plastic: 4,
+    matte: 5
+};
+
+function createDefaultMaterialProfile() {
+    return {
+        key: 'matte',
+        label: 'Matte Surface',
+        description: 'Neutral diffuse preview.',
+        detailScale: 5.5,
+        textureRepeat: 1.6,
+        displacementScale: 0.008,
+        detailContrast: 1.15,
+        sheenStrength: 0.08,
+        specularBoost: 0.9,
+        bumpIntensity: 0.06,
+        sheenTint: [1.0, 1.0, 1.0],
+        grainDirection: [1.0, 0.45]
+    };
+}
 
 export class ThreeJSRenderer {
     constructor(containerId) {
@@ -84,6 +290,7 @@ export class ThreeJSRenderer {
         this.lastFrameTimestamp = performance.now();
         this.lastRenderTimeMs = 0;
         this.textureLoader = new THREE.TextureLoader();
+        this.materialProfile = createDefaultMaterialProfile();
 
         this.scene = new THREE.Scene();
         this.camera = new THREE.PerspectiveCamera(75, this.width / this.height, 0.1, 1000);
@@ -99,6 +306,10 @@ export class ThreeJSRenderer {
         this.container.appendChild(this.renderer.domElement);
         this.canvas = this.renderer.domElement;
         this.canvas.style.touchAction = 'none';
+        this.offscreenTarget = new THREE.WebGLRenderTarget(256, 256, {
+            depthBuffer: true,
+            stencilBuffer: false
+        });
 
         this.camera.position.set(0, 0, 2.8);
 
@@ -166,7 +377,19 @@ export class ThreeJSRenderer {
             baseColor: { value: new THREE.Color(0.8, 0.8, 0.8) },
             uTexture: { value: defaultTexture },
             useLightingWeight: { value: 1.0 },
-            useTextureWeight: { value: 1.0 }
+            useTextureWeight: { value: 1.0 },
+            surfaceProfile: { value: SURFACE_PROFILE_ID.matte },
+            detailScale: { value: this.materialProfile.detailScale },
+            displacementScale: { value: this.materialProfile.displacementScale },
+            detailContrast: { value: this.materialProfile.detailContrast },
+            textureRepeat: { value: this.materialProfile.textureRepeat },
+            sheenStrength: { value: this.materialProfile.sheenStrength },
+            specularBoost: { value: this.materialProfile.specularBoost },
+            bumpIntensity: { value: this.materialProfile.bumpIntensity },
+            albedoInfluence: { value: 0.58 },
+            sheenTint: { value: new THREE.Color(...this.materialProfile.sheenTint) },
+            textureMean: { value: new THREE.Color(0.65, 0.65, 0.65) },
+            grainDirection: { value: new THREE.Vector2(...this.materialProfile.grainDirection) }
         };
 
         return new THREE.ShaderMaterial({
@@ -178,7 +401,7 @@ export class ThreeJSRenderer {
 
     createProxyMesh(mode) {
         if (mode === 'cube') {
-            const geometry = new THREE.BoxGeometry(1.6, 1.6, 1.6, 1, 1, 1);
+            const geometry = new THREE.BoxGeometry(1.6, 1.6, 1.6, 30, 30, 30);
             return new THREE.Mesh(geometry, this.material);
         }
 
@@ -245,12 +468,58 @@ export class ThreeJSRenderer {
         const roughness = clamp01(params.roughness);
         const metallic = clamp01(params.metallic);
         this.uniforms.baseColor.value.setRGB(clamp01(r), clamp01(g), clamp01(b));
+        this.uniforms.albedoInfluence.value = 0.45 + roughness * 0.2 + (1.0 - metallic) * 0.1;
 
         // Keep the visualization Phong-style while letting BRDF parameters steer it.
         this.uniforms.ka.value = 0.18 + 0.22 * (1.0 - metallic);
         this.uniforms.kd.value = 0.55 + 0.35 * (1.0 - metallic);
         this.uniforms.ks.value = 0.15 + 0.7 * metallic;
         this.uniforms.shininess.value = 8.0 + (1.0 - roughness) * 120.0;
+
+        const profileKey = this.materialProfile.key || 'matte';
+        if (profileKey === 'fabric') {
+            this.uniforms.ks.value *= 0.45 + (1.0 - roughness) * 0.25;
+            this.uniforms.shininess.value = 10.0 + (1.0 - roughness) * 36.0;
+        } else if (profileKey === 'metal') {
+            this.uniforms.ks.value = Math.max(this.uniforms.ks.value, 0.55 + metallic * 0.5);
+            this.uniforms.kd.value *= 0.72;
+            this.uniforms.shininess.value = 28.0 + (1.0 - roughness) * 160.0;
+        } else if (profileKey === 'plastic') {
+            this.uniforms.ks.value *= 1.1;
+            this.uniforms.shininess.value = 20.0 + (1.0 - roughness) * 110.0;
+        } else if (profileKey === 'wood') {
+            this.uniforms.ks.value *= 0.72;
+            this.uniforms.shininess.value = 12.0 + (1.0 - roughness) * 54.0;
+        } else {
+            this.uniforms.ks.value *= 0.8;
+        }
+    }
+
+    setMaterialProfile(profile = {}) {
+        const nextProfile = {
+            ...createDefaultMaterialProfile(),
+            ...profile
+        };
+
+        this.materialProfile = nextProfile;
+        this.uniforms.surfaceProfile.value = SURFACE_PROFILE_ID[nextProfile.key] || SURFACE_PROFILE_ID.matte;
+        this.uniforms.detailScale.value = nextProfile.detailScale;
+        this.uniforms.displacementScale.value = nextProfile.displacementScale;
+        this.uniforms.detailContrast.value = nextProfile.detailContrast;
+        this.uniforms.textureRepeat.value = nextProfile.textureRepeat;
+        this.uniforms.sheenStrength.value = nextProfile.sheenStrength;
+        this.uniforms.specularBoost.value = nextProfile.specularBoost;
+        this.uniforms.bumpIntensity.value = nextProfile.bumpIntensity;
+        this.uniforms.sheenTint.value.setRGB(...nextProfile.sheenTint);
+        this.uniforms.grainDirection.value.set(...nextProfile.grainDirection);
+        if (nextProfile.stats) {
+            this.uniforms.textureMean.value.setRGB(
+                clamp01(nextProfile.stats.avgR),
+                clamp01(nextProfile.stats.avgG),
+                clamp01(nextProfile.stats.avgB)
+            );
+        }
+        this.renderFrame();
     }
 
     getShaderSources() {
@@ -385,17 +654,38 @@ export class ThreeJSRenderer {
 
     renderFrame() {
         const start = performance.now();
+        this.renderer.setRenderTarget(null);
         this.renderer.render(this.scene, this.camera);
         this.lastRenderTimeMs = performance.now() - start;
         return this.lastRenderTimeMs;
     }
 
-    captureNormalizedPixels(width = 64, height = 64) {
+    renderOffscreenFrame(width, height) {
+        const targetWidth = Math.max(32, Math.floor(width));
+        const targetHeight = Math.max(32, Math.floor(height));
+        if (this.offscreenTarget.width !== targetWidth || this.offscreenTarget.height !== targetHeight) {
+            this.offscreenTarget.setSize(targetWidth, targetHeight);
+        }
+
+        const start = performance.now();
+        this.renderer.setRenderTarget(this.offscreenTarget);
+        this.renderer.clear(true, true, true);
+        this.renderer.render(this.scene, this.camera);
+        this.renderer.setRenderTarget(null);
+        this.lastRenderTimeMs = performance.now() - start;
+        return this.lastRenderTimeMs;
+    }
+
+    captureNormalizedPixels(width = 64, height = 64, cropScale = 1.0) {
         const targetCanvas = document.createElement('canvas');
         targetCanvas.width = width;
         targetCanvas.height = height;
         const context = targetCanvas.getContext('2d', { willReadFrequently: true });
-        context.drawImage(this.canvas, 0, 0, width, height);
+        const sourceWidth = this.canvas.width * cropScale;
+        const sourceHeight = this.canvas.height * cropScale;
+        const sourceX = (this.canvas.width - sourceWidth) * 0.5;
+        const sourceY = (this.canvas.height - sourceHeight) * 0.5;
+        context.drawImage(this.canvas, sourceX, sourceY, sourceWidth, sourceHeight, 0, 0, width, height);
         const imageData = context.getImageData(0, 0, width, height);
         const pixels = [];
 
@@ -415,11 +705,29 @@ export class ThreeJSRenderer {
         const height = options.height || width;
         const previousAutoRotate = this.autoRotate;
         const previousRenderMode = this.currentRenderMode;
+        const previousArrowVisible = this.lightArrow.visible;
+        const previousScale = this.activeMesh ? this.activeMesh.scale.clone() : null;
+        const previousLightPosition = this.lightState.position.clone();
+        const previousLightColor = this.lightState.color.clone();
+        const previousClearColor = this.renderer.getClearColor(new THREE.Color()).clone();
+        const previousClearAlpha = this.renderer.getClearAlpha();
+        const previousCameraZ = this.camera.position.z;
+        const previousCameraAspect = this.camera.aspect;
 
         this.autoRotate = false;
         if (this.controls) {
             this.controls.autoRotate = false;
             this.controls.update();
+        }
+
+        this.lightArrow.visible = options.showLightHelper === true;
+        this.renderer.setClearColor(0x000000, 0);
+        if (this.activeMesh && options.snapshotScale) {
+            this.activeMesh.scale.setScalar(options.snapshotScale);
+        }
+        if (options.snapshotCameraZ) {
+            this.camera.position.z = options.snapshotCameraZ;
+            this.camera.updateProjectionMatrix();
         }
 
         if (options.lightingType) {
@@ -430,14 +738,43 @@ export class ThreeJSRenderer {
         }
 
         this.updateMaterial(parameters);
-        const renderTimeMs = this.renderFrame();
-        const pixels = this.captureNormalizedPixels(width, height);
+        const renderTimeMs = this.renderOffscreenFrame(width, height);
+        const pixelBuffer = new Uint8Array(width * height * 4);
+        this.renderer.readRenderTargetPixels(this.offscreenTarget, 0, 0, width, height, pixelBuffer);
+        const pixels = [];
+
+        for (let index = 0; index < pixelBuffer.length; index += 4) {
+            const alpha = pixelBuffer[index + 3] / 255;
+            const r = pixelBuffer[index] / 255;
+            const g = pixelBuffer[index + 1] / 255;
+            const b = pixelBuffer[index + 2] / 255;
+            const [baseR, baseG, baseB] = parameters.albedo;
+            pixels.push(
+                alpha > 0.01 ? r : baseR,
+                alpha > 0.01 ? g : baseG,
+                alpha > 0.01 ? b : baseB
+            );
+        }
 
         this.autoRotate = previousAutoRotate;
         if (this.controls) {
             this.controls.autoRotate = previousAutoRotate;
         }
+        if (this.activeMesh && previousScale) {
+            this.activeMesh.scale.copy(previousScale);
+        }
+        this.lightArrow.visible = previousArrowVisible;
+        this.lightState.position.copy(previousLightPosition);
+        this.lightState.color.copy(previousLightColor);
+        this.uniforms.lightPosition.value.copy(previousLightPosition);
+        this.uniforms.lightColor.value.copy(previousLightColor);
+        this.lightArrow.setDirection(previousLightPosition.clone().normalize());
+        this.renderer.setClearColor(previousClearColor, previousClearAlpha);
+        this.camera.position.z = previousCameraZ;
+        this.camera.aspect = previousCameraAspect;
+        this.camera.updateProjectionMatrix();
         this.setRenderMode(previousRenderMode);
+        this.renderFrame();
 
         return {
             pixels,

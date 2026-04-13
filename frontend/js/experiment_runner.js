@@ -1,8 +1,8 @@
-import { ExperimentLogger } from './experiment_logger.js';
-import { ExperimentExporter } from './exporter.js';
-import { aggregateBatchMetrics, analyzeConvergence, clamp01, computeFinalMetrics, detectConvergence, sanitizeParameters } from './metrics.js';
-import { FiniteDifferenceOptimizer } from './optimizer.js';
-import { SeededRNG, createSeededRandom } from './research_rng.js';
+import { ExperimentLogger } from './experiment_logger.js?v=20260413b';
+import { ExperimentExporter } from './exporter.js?v=20260413b';
+import { aggregateBatchMetrics, analyzeConvergence, clamp01, computeFinalMetrics, detectConvergence, sanitizeParameters } from './metrics.js?v=20260413b';
+import { FiniteDifferenceOptimizer } from './optimizer.js?v=20260413b';
+import { SeededRNG, createSeededRandom } from './research_rng.js?v=20260413b';
 
 function cloneParameters(parameters) {
     return {
@@ -31,6 +31,252 @@ function createCanvas(width, height) {
     return canvas;
 }
 
+function luminance(r, g, b) {
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function coverImageOnCanvas(context, image, width, height) {
+    const sourceWidth = image.naturalWidth || image.videoWidth || image.width;
+    const sourceHeight = image.naturalHeight || image.videoHeight || image.height;
+    const scale = Math.max(width / sourceWidth, height / sourceHeight);
+    const drawWidth = sourceWidth * scale;
+    const drawHeight = sourceHeight * scale;
+    const offsetX = (width - drawWidth) * 0.5;
+    const offsetY = (height - drawHeight) * 0.5;
+    context.drawImage(image, offsetX, offsetY, drawWidth, drawHeight);
+}
+
+function computePixelStatistics(imageData) {
+    let sumR = 0;
+    let sumG = 0;
+    let sumB = 0;
+    let sumL = 0;
+    let sumL2 = 0;
+    const count = imageData.data.length / 4;
+
+    for (let index = 0; index < imageData.data.length; index += 4) {
+        const r = imageData.data[index] / 255;
+        const g = imageData.data[index + 1] / 255;
+        const b = imageData.data[index + 2] / 255;
+        const l = luminance(r, g, b);
+        sumR += r;
+        sumG += g;
+        sumB += b;
+        sumL += l;
+        sumL2 += l * l;
+    }
+
+    const avgR = sumR / count;
+    const avgG = sumG / count;
+    const avgB = sumB / count;
+    const avgL = sumL / count;
+    const variance = Math.max(0, sumL2 / count - avgL * avgL);
+
+    return {
+        avgR,
+        avgG,
+        avgB,
+        avgL,
+        stdL: Math.sqrt(variance)
+    };
+}
+
+function clampColorChannel(value) {
+    return Math.max(0, Math.min(255, Math.round(value)));
+}
+
+function buildSeamlessTextureFromImage(image, outputSize = 256) {
+    const analysisCanvas = createCanvas(128, 128);
+    const analysisContext = analysisCanvas.getContext('2d', { willReadFrequently: true });
+    coverImageOnCanvas(analysisContext, image, analysisCanvas.width, analysisCanvas.height);
+    const sourceImageData = analysisContext.getImageData(0, 0, analysisCanvas.width, analysisCanvas.height);
+    const sourcePixels = sourceImageData.data;
+    const stats = computePixelStatistics(sourceImageData);
+    const repairedCanvas = createCanvas(analysisCanvas.width, analysisCanvas.height);
+    const repairedContext = repairedCanvas.getContext('2d', { willReadFrequently: true });
+    const repairedImageData = repairedContext.createImageData(analysisCanvas.width, analysisCanvas.height);
+    const repairedPixels = repairedImageData.data;
+    const shadowThreshold = Math.max(0.16, stats.avgL - stats.stdL * 0.9);
+    const brightThreshold = Math.min(0.95, stats.avgL + stats.stdL * 1.25 + 0.18);
+
+    for (let index = 0; index < sourcePixels.length; index += 4) {
+        const r = sourcePixels[index] / 255;
+        const g = sourcePixels[index + 1] / 255;
+        const b = sourcePixels[index + 2] / 255;
+        const l = luminance(r, g, b);
+        const deviation = Math.abs(r - stats.avgR) + Math.abs(g - stats.avgG) + Math.abs(b - stats.avgB);
+        const invalid = l < shadowThreshold || l > brightThreshold || deviation > 0.75;
+        const safeL = Math.max(l, 0.06);
+        const gain = Math.max(0.7, Math.min(1.45, stats.avgL / safeL));
+
+        const nextR = invalid ? stats.avgR * 255 : r * 255 * gain;
+        const nextG = invalid ? stats.avgG * 255 : g * 255 * gain;
+        const nextB = invalid ? stats.avgB * 255 : b * 255 * gain;
+
+        repairedPixels[index] = clampColorChannel(nextR);
+        repairedPixels[index + 1] = clampColorChannel(nextG);
+        repairedPixels[index + 2] = clampColorChannel(nextB);
+        repairedPixels[index + 3] = 255;
+    }
+
+    repairedContext.putImageData(repairedImageData, 0, 0);
+
+    const patchSize = 16;
+    const patchCandidates = [];
+    const repairedStats = computePixelStatistics(repairedImageData);
+
+    for (let top = 0; top <= repairedCanvas.height - patchSize; top += patchSize) {
+        for (let left = 0; left <= repairedCanvas.width - patchSize; left += patchSize) {
+            const patch = repairedContext.getImageData(left, top, patchSize, patchSize);
+            const patchStats = computePixelStatistics(patch);
+            let penalty = 0;
+
+            for (let index = 0; index < patch.data.length; index += 4) {
+                const r = patch.data[index] / 255;
+                const g = patch.data[index + 1] / 255;
+                const b = patch.data[index + 2] / 255;
+                const l = luminance(r, g, b);
+                if (l < shadowThreshold || l > brightThreshold) {
+                    penalty += 1;
+                }
+            }
+
+            const darknessPenalty = Math.abs(patchStats.avgL - repairedStats.avgL);
+            const colorPenalty = Math.abs(patchStats.avgR - repairedStats.avgR)
+                + Math.abs(patchStats.avgG - repairedStats.avgG)
+                + Math.abs(patchStats.avgB - repairedStats.avgB);
+
+            patchCandidates.push({
+                left,
+                top,
+                score: penalty * 4 + darknessPenalty * 100 + colorPenalty * 70 + patchStats.stdL * 20
+            });
+        }
+    }
+
+    patchCandidates.sort((a, b) => a.score - b.score);
+    const selectedPatches = patchCandidates.slice(0, 16);
+    const tileCanvas = createCanvas(outputSize, outputSize);
+    const tileContext = tileCanvas.getContext('2d', { willReadFrequently: true });
+    const tilePatchSize = outputSize / 4;
+
+    selectedPatches.forEach((patch, index) => {
+        const dx = (index % 4) * tilePatchSize;
+        const dy = Math.floor(index / 4) * tilePatchSize;
+        tileContext.drawImage(
+            repairedCanvas,
+            patch.left,
+            patch.top,
+            patchSize,
+            patchSize,
+            dx,
+            dy,
+            tilePatchSize,
+            tilePatchSize
+        );
+    });
+
+    tileContext.globalAlpha = 0.12;
+    tileContext.drawImage(tileCanvas, -outputSize * 0.5, 0, outputSize, outputSize);
+    tileContext.drawImage(tileCanvas, outputSize * 0.5, 0, outputSize, outputSize);
+    tileContext.drawImage(tileCanvas, 0, -outputSize * 0.5, outputSize, outputSize);
+    tileContext.drawImage(tileCanvas, 0, outputSize * 0.5, outputSize, outputSize);
+    tileContext.globalAlpha = 1;
+
+    return {
+        canvas: tileCanvas,
+        source: tileCanvas.toDataURL('image/png'),
+        stats: computePixelStatistics(tileContext.getImageData(0, 0, outputSize, outputSize))
+    };
+}
+
+function buildMaterialProfile(stats) {
+    const { saturation, highlightRatio, stdDev, neutralness, avgL, warmBias, coolBias } = stats;
+
+    if (highlightRatio > 0.12 && neutralness > 0.62) {
+        return {
+            key: 'metal',
+            label: 'Metallic / Reflective',
+            description: 'Menambahkan brushed detail, highlight tajam, dan displacement halus agar proxy terlihat lebih licin dan mengkilap.',
+            detailScale: 10.5,
+            textureRepeat: 2.4,
+            displacementScale: 0.004,
+            detailContrast: 1.45,
+            sheenStrength: 0.28,
+            specularBoost: 1.45,
+            bumpIntensity: 0.035,
+            sheenTint: [0.92, 0.96, 1.0],
+            grainDirection: [1.0, 0.08]
+        };
+    }
+
+    if (saturation > 0.18 && stdDev > 0.16 && highlightRatio < 0.08) {
+        return {
+            key: 'fabric',
+            label: 'Fabric / Velvet',
+            description: 'Menambahkan weave/fiber noise, bump lebih terasa, dan rim sheen lembut agar sphere/cube terasa seperti kain atau beludru.',
+            detailScale: 13.5,
+            textureRepeat: 3.0,
+            displacementScale: 0.03,
+            detailContrast: 1.3,
+            sheenStrength: 0.42,
+            specularBoost: 0.72,
+            bumpIntensity: 0.12,
+            sheenTint: [1.0, 0.94, 0.92],
+            grainDirection: [0.92, 0.35]
+        };
+    }
+
+    if (warmBias > 0.05 && stdDev > 0.1) {
+        return {
+            key: 'wood',
+            label: 'Wood / Grainy',
+            description: 'Memunculkan garis serat dan variasi tonal agar proxy lebih dekat ke permukaan kayu atau material berserat.',
+            detailScale: 8.5,
+            textureRepeat: 2.2,
+            displacementScale: 0.012,
+            detailContrast: 1.1,
+            sheenStrength: 0.12,
+            specularBoost: 0.88,
+            bumpIntensity: 0.07,
+            sheenTint: [1.0, 0.95, 0.88],
+            grainDirection: [1.0, 0.22]
+        };
+    }
+
+    if (highlightRatio > 0.06 && saturation > 0.08) {
+        return {
+            key: 'plastic',
+            label: 'Glossy Plastic / Coated',
+            description: 'Memberi highlight yang lebih rapat dan permukaan lebih rapih supaya terasa seperti plastik coating atau keramik glossy.',
+            detailScale: 7.2,
+            textureRepeat: 1.8,
+            displacementScale: 0.006,
+            detailContrast: 1.0,
+            sheenStrength: 0.2,
+            specularBoost: 1.12,
+            bumpIntensity: 0.04,
+            sheenTint: [0.98, 0.99, 1.0],
+            grainDirection: [1.0, 0.14]
+        };
+    }
+
+    return {
+        key: 'matte',
+        label: 'Matte / Stone',
+        description: 'Menonjolkan granular diffuse detail agar proxy terlihat lebih kasar, kering, dan tidak terlalu memantul.',
+        detailScale: 6.8,
+        textureRepeat: 2.0,
+        displacementScale: 0.014,
+        detailContrast: 1.18,
+        sheenStrength: 0.08,
+        specularBoost: 0.78,
+        bumpIntensity: 0.085,
+        sheenTint: [1.0, 1.0, 1.0],
+        grainDirection: [0.84, 0.44]
+    };
+}
+
 export class ExperimentRunner {
     constructor({ renderer, imageSize = 64 }) {
         this.renderer = renderer;
@@ -54,19 +300,25 @@ export class ExperimentRunner {
             learning_rate: 0.05,
             epsilon: 0.01,
             clamp_enabled: true,
+            optimize_albedo: false,
             seed: 1,
             ...overrides
         };
     }
 
     async registerImage({ imageId, source, referenceSource = null }) {
-        const target = await this.prepareImage(source);
+        const image = await this.resolveImageSource(source);
+        const materialTexture = buildSeamlessTextureFromImage(image);
+        const target = await this.prepareImage(materialTexture.canvas);
         const reference = referenceSource ? await this.prepareImage(referenceSource) : null;
+        const materialProfile = this.analyzeMaterialAppearance(target);
 
         this.imageRegistry.set(imageId, {
             id: imageId,
             target,
-            reference
+            reference,
+            materialProfile,
+            materialTexture
         });
 
         return this.imageRegistry.get(imageId);
@@ -96,6 +348,10 @@ export class ExperimentRunner {
     }
 
     resolveImageSource(source) {
+        if (source instanceof HTMLCanvasElement) {
+            return Promise.resolve(source);
+        }
+
         if (source instanceof HTMLImageElement) {
             if (source.complete && source.naturalWidth > 0) {
                 return Promise.resolve(source);
@@ -120,13 +376,44 @@ export class ExperimentRunner {
     }
 
     computeHeuristicInitialization(imageRecord) {
+        const stats = imageRecord.materialProfile?.stats || this.collectImageStats(imageRecord.target);
         const pixels = imageRecord.target.imageData.data;
+        let sumR = 0;
+        let sumG = 0;
+        let sumB = 0;
+        const pixelCount = pixels.length / 4;
+
+        for (let index = 0; index < pixels.length; index += 4) {
+            const r = pixels[index] / 255;
+            const g = pixels[index + 1] / 255;
+            const b = pixels[index + 2] / 255;
+
+            sumR += r;
+            sumG += g;
+            sumB += b;
+        }
+
+        const avgR = sumR / pixelCount;
+        const avgG = sumG / pixelCount;
+        const avgB = sumB / pixelCount;
+        const { avgL, stdDev, saturation, neutralness, highlightRatio, contrastEnergy } = stats;
+
+        return sanitizeParameters({
+            albedo: [avgR, avgG, avgB],
+            roughness: clamp01(0.26 + stdDev * 0.55 + contrastEnergy * 0.35 - highlightRatio * 0.24),
+            metallic: clamp01(0.06 + neutralness * 0.48 + highlightRatio * 0.78 - saturation * 0.62 - stdDev * 0.25)
+        });
+    }
+
+    collectImageStats(targetImage) {
+        const pixels = targetImage.imageData.data;
         let sumR = 0;
         let sumG = 0;
         let sumB = 0;
         let sumL = 0;
         let sumL2 = 0;
         let highlightCount = 0;
+        let edgeEnergy = 0;
         const pixelCount = pixels.length / 4;
 
         for (let index = 0; index < pixels.length; index += 4) {
@@ -146,6 +433,18 @@ export class ExperimentRunner {
             }
         }
 
+        for (let y = 0; y < targetImage.height - 1; y += 1) {
+            for (let x = 0; x < targetImage.width - 1; x += 1) {
+                const index = (y * targetImage.width + x) * 4;
+                const rightIndex = index + 4;
+                const bottomIndex = index + targetImage.width * 4;
+                const currentL = 0.2126 * (pixels[index] / 255) + 0.7152 * (pixels[index + 1] / 255) + 0.0722 * (pixels[index + 2] / 255);
+                const rightL = 0.2126 * (pixels[rightIndex] / 255) + 0.7152 * (pixels[rightIndex + 1] / 255) + 0.0722 * (pixels[rightIndex + 2] / 255);
+                const bottomL = 0.2126 * (pixels[bottomIndex] / 255) + 0.7152 * (pixels[bottomIndex + 1] / 255) + 0.0722 * (pixels[bottomIndex + 2] / 255);
+                edgeEnergy += Math.abs(currentL - rightL) + Math.abs(currentL - bottomL);
+            }
+        }
+
         const avgR = sumR / pixelCount;
         const avgG = sumG / pixelCount;
         const avgB = sumB / pixelCount;
@@ -155,14 +454,43 @@ export class ExperimentRunner {
         const maxRGB = Math.max(avgR, avgG, avgB);
         const minRGB = Math.min(avgR, avgG, avgB);
         const saturation = maxRGB === 0 ? 0 : (maxRGB - minRGB) / maxRGB;
-        const neutralness = 1 - saturation;
-        const highlightRatio = highlightCount / pixelCount;
 
-        return sanitizeParameters({
-            albedo: [avgR, avgG, avgB],
-            roughness: clamp01(0.3 + stdDev * 0.7 - highlightRatio * 0.25),
-            metallic: clamp01(0.08 + neutralness * 0.55 + highlightRatio * 0.7 - saturation * 0.7 - stdDev * 0.5)
-        });
+        return {
+            avgR,
+            avgG,
+            avgB,
+            avgL,
+            stdDev,
+            saturation,
+            neutralness: 1 - saturation,
+            highlightRatio: highlightCount / pixelCount,
+            warmBias: avgR - avgB,
+            coolBias: avgB - avgR,
+            contrastEnergy: clamp01(edgeEnergy / Math.max(1, targetImage.width * targetImage.height))
+        };
+    }
+
+    analyzeMaterialAppearance(targetImage) {
+        const stats = this.collectImageStats(targetImage);
+        const profile = buildMaterialProfile(stats);
+        return {
+            ...profile,
+            confidence: clamp01(
+                (stats.highlightRatio * 1.8)
+                + (stats.stdDev * 1.2)
+                + (stats.contrastEnergy * 0.6)
+                + (stats.saturation * 0.4)
+            ),
+            stats
+        };
+    }
+
+    getMaterialProfile(imageId) {
+        return this.getImageRecord(imageId).materialProfile;
+    }
+
+    getMaterialTexture(imageId) {
+        return this.getImageRecord(imageId).materialTexture;
     }
 
     computeRandomInitialization(rng) {
@@ -245,6 +573,7 @@ export class ExperimentRunner {
             analysis: convergence,
             convergence_detection: convergenceDetection,
             metadata,
+            material_profile: record.materialProfile,
             profile: {
                 total_render_calls: 1 + optimizerResult.logs.length * 6,
                 total_time: optimizerResult.total_time_ms,
@@ -271,7 +600,11 @@ export class ExperimentRunner {
             width: targetImage.width,
             height: targetImage.height,
             lightingType: options.lightingType || 'default',
-            referencePixels: record.reference ? record.reference.pixels : null
+            referencePixels: record.reference ? record.reference.pixels : null,
+            snapshotScale: 1.55,
+            snapshotCameraZ: 2.1,
+            showLightHelper: false,
+            transparentBackground: true
         };
 
         const optimizerResult = await this.optimizer.optimize({

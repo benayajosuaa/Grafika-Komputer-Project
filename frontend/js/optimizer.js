@@ -1,4 +1,4 @@
-import { computeGradientNorm, computePhotometricMetrics, sanitizeParameters } from './metrics.js';
+import { computeGradientNorm, computePhotometricMetrics, sanitizeParameters } from './metrics.js?v=20260413b';
 
 function cloneParameters(parameters) {
     return {
@@ -8,14 +8,23 @@ function cloneParameters(parameters) {
     };
 }
 
-function parameterKeys() {
-    return [
-        ['albedo', 0],
-        ['albedo', 1],
-        ['albedo', 2],
+function parameterKeys(config = {}) {
+    const keys = [];
+
+    if (config.optimize_albedo === true) {
+        keys.push(
+            ['albedo', 0],
+            ['albedo', 1],
+            ['albedo', 2]
+        );
+    }
+
+    keys.push(
         ['roughness', null],
         ['metallic', null]
-    ];
+    );
+
+    return keys;
 }
 
 function shouldStopFromLogs(logs) {
@@ -57,7 +66,7 @@ export class FiniteDifferenceOptimizer {
 
         let renderTimeMs = 0;
 
-        for (const [key, componentIndex] of parameterKeys()) {
+        for (const [key, componentIndex] of parameterKeys(config)) {
             const perturbed = cloneParameters(parameters);
 
             if (componentIndex == null) {
@@ -87,7 +96,9 @@ export class FiniteDifferenceOptimizer {
     applyGradientStep(parameters, gradient, config) {
         const next = cloneParameters(parameters);
 
-        next.albedo = next.albedo.map((value, index) => value - config.learning_rate * gradient.albedo[index]);
+        if (config.optimize_albedo === true) {
+            next.albedo = next.albedo.map((value, index) => value - config.learning_rate * gradient.albedo[index]);
+        }
         next.roughness -= config.learning_rate * gradient.roughness;
         next.metallic -= config.learning_rate * gradient.metallic;
 

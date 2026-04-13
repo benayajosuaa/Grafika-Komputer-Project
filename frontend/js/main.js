@@ -1,6 +1,14 @@
-import { runExampleAblation, runExampleExperiment } from './example_experiments.js';
-import { ExperimentRunner } from './experiment_runner.js';
-import { ThreeJSRenderer } from './renderer.js';
+import { runExampleAblation, runExampleExperiment } from './example_experiments.js?v=20260413b';
+import { ExperimentRunner } from './experiment_runner.js?v=20260413b';
+import { ThreeJSRenderer } from './renderer.js?v=20260413b';
+
+function createFallbackMaterialProfile() {
+    return {
+        key: 'matte',
+        label: 'Matte / Stone',
+        description: 'Proxy geometry akan menyesuaikan mikrostruktur dan highlight supaya lebih mirip material yang terdeteksi.'
+    };
+}
 
 class BRDFApp {
     constructor() {
@@ -10,6 +18,7 @@ class BRDFApp {
         this.currentExperimentResult = null;
         this.currentAblationResult = null;
         this.currentBatchResult = null;
+        this.currentMaterialProfile = createFallbackMaterialProfile();
         this.parameters = {
             albedo: [0.5, 0.5, 0.5],
             roughness: 0.5,
@@ -39,6 +48,7 @@ class BRDFApp {
         this.updateOptimizationStatus(0, 0, null, 0);
         this.updateSystemInfo();
         this.startPerformanceProbe();
+        this.updateMaterialProfileDisplay();
         this.updatePreview();
         this.exposeResearchApi();
     }
@@ -52,7 +62,8 @@ class BRDFApp {
         window.rendererApi = {
             setRenderMode: (mode) => this.renderer.setRenderMode(mode),
             loadTexture: (textureSource) => this.renderer.loadTexture(textureSource),
-            getShaderSources: () => this.renderer.getShaderSources()
+            getShaderSources: () => this.renderer.getShaderSources(),
+            setMaterialProfile: (profile) => this.applyMaterialProfile(profile)
         };
         window.experimentUiApi = {
             runAblationAndDisplay: (imageId = this.currentImageId, config = {}) => this.runAblationAndDisplay(imageId, config),
@@ -299,10 +310,13 @@ class BRDFApp {
             source: imageUrl
         });
         try {
-            await this.renderer.loadTexture(imageUrl);
+            const cleanedTexture = this.experimentRunner.getMaterialTexture(this.currentImageId);
+            await this.renderer.loadTexture(cleanedTexture?.source || imageUrl);
         } catch (error) {
             console.warn('Could not load uploaded image as texture:', error);
         }
+
+        this.applyMaterialProfile(this.experimentRunner.getMaterialProfile(this.currentImageId));
 
         const heuristicParameters = this.experimentRunner.createInitialParameters({
             image_id: this.currentImageId,
@@ -320,6 +334,36 @@ class BRDFApp {
         this.updateParameterDisplay();
         this.updatePreview();
         this.showMessage(`Image registered as ${this.currentImageId}`);
+    }
+
+    applyMaterialProfile(profile = createFallbackMaterialProfile()) {
+        this.currentMaterialProfile = {
+            ...createFallbackMaterialProfile(),
+            ...profile
+        };
+
+        if (this.renderer) {
+            this.renderer.setMaterialProfile(this.currentMaterialProfile);
+            this.renderer.updateMaterial(this.parameters);
+        }
+
+        this.updateMaterialProfileDisplay();
+    }
+
+    updateMaterialProfileDisplay() {
+        const labelElement = document.getElementById('material-profile-label');
+        const descriptionElement = document.getElementById('material-profile-description');
+
+        if (labelElement) {
+            labelElement.textContent = this.currentMaterialProfile?.label || 'Matte / Stone';
+        }
+
+        if (descriptionElement) {
+            const confidenceText = this.currentMaterialProfile?.confidence != null
+                ? ` Confidence ${Math.round(this.currentMaterialProfile.confidence * 100)}%.`
+                : '';
+            descriptionElement.textContent = `${this.currentMaterialProfile?.description || createFallbackMaterialProfile().description}${confidenceText}`;
+        }
     }
 
     syncSlidersToParameters() {
@@ -409,6 +453,7 @@ class BRDFApp {
             learning_rate: 0.05,
             epsilon: 0.01,
             clamp_enabled: true,
+            optimize_albedo: false,
             seed: 7
         };
     }
@@ -514,6 +559,9 @@ class BRDFApp {
             roughness: 0.5,
             metallic: 0.0
         };
+        this.applyMaterialProfile(
+            this.currentImageId ? this.experimentRunner.getMaterialProfile(this.currentImageId) : createFallbackMaterialProfile()
+        );
         this.lossHistory = [];
         this.gradientHistory = [];
         this.currentExperimentResult = null;
