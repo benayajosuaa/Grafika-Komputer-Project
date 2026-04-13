@@ -84,6 +84,10 @@ const VERTEX_SHADER = `
 const FRAGMENT_SHADER = `
     uniform vec3 lightPosition;
     uniform vec3 lightColor;
+    uniform float lightIntensity;
+    uniform float opacity;
+    uniform float ior;
+    uniform float glassMode;
     uniform float ka;
     uniform float kd;
     uniform float ks;
@@ -186,6 +190,11 @@ const FRAGMENT_SHADER = `
         vec3 l = normalize(lightPosition - vWorldPosition);
         vec3 v = normalize(cameraPosition - vWorldPosition);
         vec3 r = reflect(-l, n);
+        vec3 effectiveLightColor = lightColor * lightIntensity;
+        vec3 h = normalize(l + v);
+        float eta = max(1.0, ior);
+        float fresnelBase = pow((eta - 1.0) / (eta + 1.0), 2.0);
+        float fresnel = fresnelBase + (1.0 - fresnelBase) * pow(1.0 - max(dot(n, v), 0.0), 5.0);
 
         float diffuseTerm = max(dot(n, l), 0.0);
         float specularTerm = 0.0;
@@ -230,18 +239,21 @@ const FRAGMENT_SHADER = `
             sheen = sheenStrength * 0.15 * granular;
         }
 
-        vec3 ambient = ka * lightColor;
-        vec3 diffuse = kd * lightColor * diffuseTerm;
+        vec3 ambient = ka * effectiveLightColor;
+        vec3 diffuse = kd * effectiveLightColor * diffuseTerm;
         vec3 specularTint = mix(vec3(1.0), baseColor, surfaceProfile > 1.5 && surfaceProfile < 2.5 ? 0.35 : 0.18);
-        vec3 specularColor = mix(lightColor, specularTint, clamp(surfaceProfile > 1.5 && surfaceProfile < 2.5 ? 0.55 : 0.08, 0.0, 1.0));
+        vec3 specularColor = mix(effectiveLightColor, specularTint, clamp(surfaceProfile > 1.5 && surfaceProfile < 2.5 ? 0.55 : 0.08, 0.0, 1.0));
         vec3 specular = ks * profileSpecularBoost * specularColor * specularTerm;
         vec3 lighting = ambient + diffuse + specular;
         lighting += sheen * sheenTint;
         vec3 shadedBase = mix(vec3(1.0), lighting, useLightingWeight);
         vec3 texturedBase = mix(vec3(1.0), profileTexture, useTextureWeight);
         vec3 finalColor = shadedBase * texturedBase * baseColor;
+        float transmission = mix(1.0, 0.3, glassMode);
+        vec3 glassColor = mix(finalColor * transmission, vec3(1.0) * effectiveLightColor * fresnel * 1.25, clamp(glassMode, 0.0, 1.0));
+        float alpha = mix(1.0, opacity, glassMode);
 
-        gl_FragColor = vec4(finalColor, 1.0);
+        gl_FragColor = vec4(mix(finalColor, glassColor, glassMode), alpha);
     }
 `;
 
@@ -282,23 +294,33 @@ export class ThreeJSRenderer {
         this.height = this.container.clientHeight || 640;
         this.currentGeometryMode = 'sphere';
         this.currentRenderMode = 'lightingAndTexture';
-        this.activeMesh = null;
+        this.meshes = {};
+        this.multiviewMeshes = {};
         this.autoRotate = false;
         this.isTouchDevice = 'ontouchstart' in window;
         this.controls = null;
         this.frameTimes = [];
         this.lastFrameTimestamp = performance.now();
         this.lastRenderTimeMs = 0;
+        this.lastSpecularMetricsTimestamp = 0;
+        this.specularMetricsListener = null;
         this.textureLoader = new THREE.TextureLoader();
         this.materialProfile = createDefaultMaterialProfile();
+        this.isMultiviewEnabled = false;
 
         this.scene = new THREE.Scene();
         this.camera = new THREE.PerspectiveCamera(75, this.width / this.height, 0.1, 1000);
+        this.multiviewScene = new THREE.Scene();
         this.renderer = new THREE.WebGLRenderer({
             antialias: true,
             alpha: true,
             preserveDrawingBuffer: true
         });
+        this.multiviewContainer = document.getElementById('multiview-container');
+        this.multiviewWidth = this.multiviewContainer?.clientWidth || 640;
+        this.multiviewHeight = this.multiviewContainer?.clientHeight || 320;
+        this.multiviewRenderer = null;
+        this.multiviewCameras = {};
 
         this.renderer.setSize(this.width, this.height);
         this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
@@ -327,8 +349,20 @@ export class ThreeJSRenderer {
             0.14
         );
         this.scene.add(this.lightArrow);
+        this.multiviewLightArrow = new THREE.ArrowHelper(
+            this.lightState.position.clone().normalize(),
+            new THREE.Vector3(0, 0, 0),
+            2.2,
+            0xff4d4f,
+            0.28,
+            0.14
+        );
+        this.multiviewLightArrow.visible = false;
+        this.multiviewScene.add(this.multiviewLightArrow);
 
         this.material = this.createMaterial();
+        this.initializeProxyMeshes();
+        this.initializeMultiview();
         this.setGeometryMode('sphere');
 
         this.updateInteractionHint();
@@ -370,6 +404,10 @@ export class ThreeJSRenderer {
         this.uniforms = {
             lightPosition: { value: this.lightState.position.clone() },
             lightColor: { value: this.lightState.color.clone() },
+            lightIntensity: { value: 1.0 },
+            opacity: { value: 1.0 },
+            ior: { value: 1.5 },
+            glassMode: { value: 0.0 },
             ka: { value: 0.25 },
             kd: { value: 0.75 },
             ks: { value: 0.35 },
@@ -395,7 +433,9 @@ export class ThreeJSRenderer {
         return new THREE.ShaderMaterial({
             uniforms: this.uniforms,
             vertexShader: VERTEX_SHADER,
-            fragmentShader: FRAGMENT_SHADER
+            fragmentShader: FRAGMENT_SHADER,
+            transparent: false,
+            depthWrite: true
         });
     }
 
@@ -409,21 +449,109 @@ export class ThreeJSRenderer {
         return new THREE.Mesh(geometry, this.material);
     }
 
-    setGeometryMode(mode = 'sphere') {
-        const nextMode = mode === 'cube' ? 'cube' : 'sphere';
+    initializeProxyMeshes() {
+        this.meshes.sphere = this.createProxyMesh('sphere');
+        this.meshes.cube = this.createProxyMesh('cube');
 
-        if (this.activeMesh) {
-            this.scene.remove(this.activeMesh);
-            if (this.activeMesh.geometry) {
-                this.activeMesh.geometry.dispose();
-            }
+        Object.values(this.meshes).forEach((mesh) => {
+            mesh.rotation.x = -0.2;
+            mesh.rotation.y = 0.5;
+            mesh.visible = false;
+            this.scene.add(mesh);
+        });
+    }
+
+    initializeMultiview() {
+        if (!this.multiviewContainer) {
+            return;
         }
 
+        this.multiviewRenderer = new THREE.WebGLRenderer({
+            antialias: true,
+            alpha: true,
+            preserveDrawingBuffer: true
+        });
+        this.multiviewRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+        this.multiviewRenderer.setClearColor(0x101827);
+        this.multiviewRenderer.setSize(this.multiviewWidth, this.multiviewHeight);
+        this.multiviewContainer.appendChild(this.multiviewRenderer.domElement);
+
+        this.multiviewMeshes.sphere = new THREE.Mesh(this.meshes.sphere.geometry, this.material);
+        this.multiviewMeshes.cube = new THREE.Mesh(this.meshes.cube.geometry, this.material);
+
+        Object.values(this.multiviewMeshes).forEach((mesh) => {
+            mesh.rotation.x = -0.2;
+            mesh.rotation.y = 0.5;
+            mesh.visible = false;
+            this.multiviewScene.add(mesh);
+        });
+
+        this.multiviewCameras.front = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
+        this.multiviewCameras.side = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
+        this.multiviewCameras.top = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
+        this.multiviewCameras.perspective = new THREE.PerspectiveCamera(55, 1, 0.1, 1000);
+
+        this.multiviewCameras.front.position.set(0, 0, 3.4);
+        this.multiviewCameras.side.position.set(3.4, 0, 0);
+        this.multiviewCameras.top.position.set(0, 3.4, 0);
+        this.multiviewCameras.perspective.position.set(2.35, 2.2, 2.35);
+
+        this.multiviewCameras.front.lookAt(0, 0, 0);
+        this.multiviewCameras.side.lookAt(0, 0, 0);
+        this.multiviewCameras.top.lookAt(0, 0, 0);
+        this.multiviewCameras.top.up.set(0, 0, -1);
+        this.multiviewCameras.perspective.lookAt(0, 0, 0);
+    }
+
+    setMultiviewEnabled(enabled) {
+        this.isMultiviewEnabled = enabled === true;
+        if (this.multiviewRenderer && this.isMultiviewEnabled) {
+            this.renderMultiview();
+        }
+    }
+
+    getActiveMesh() {
+        if (this.currentGeometryMode === 'cube') {
+            return this.meshes.cube;
+        }
+
+        return this.meshes.sphere;
+    }
+
+    updateGeometryVisibility() {
+        if (this.meshes.sphere) {
+            this.meshes.sphere.visible = this.currentGeometryMode !== 'cube';
+        }
+        if (this.meshes.cube) {
+            this.meshes.cube.visible = this.currentGeometryMode !== 'sphere';
+        }
+        if (this.multiviewMeshes.sphere) {
+            this.multiviewMeshes.sphere.visible = this.currentGeometryMode !== 'cube';
+        }
+        if (this.multiviewMeshes.cube) {
+            this.multiviewMeshes.cube.visible = this.currentGeometryMode !== 'sphere';
+        }
+    }
+
+    syncMeshTransformsToMultiview() {
+        Object.keys(this.meshes).forEach((key) => {
+            if (!this.meshes[key] || !this.multiviewMeshes[key]) {
+                return;
+            }
+
+            this.multiviewMeshes[key].position.copy(this.meshes[key].position);
+            this.multiviewMeshes[key].rotation.copy(this.meshes[key].rotation);
+            this.multiviewMeshes[key].scale.copy(this.meshes[key].scale);
+        });
+        this.multiviewLightArrow.setDirection(this.lightState.position.clone().normalize());
+    }
+
+    setGeometryMode(mode = 'sphere') {
+        const nextMode = ['sphere', 'cube', 'compare'].includes(mode) ? mode : 'sphere';
         this.currentGeometryMode = nextMode;
-        this.activeMesh = this.createProxyMesh(nextMode);
-        this.activeMesh.rotation.x = -0.2;
-        this.activeMesh.rotation.y = 0.5;
-        this.scene.add(this.activeMesh);
+        this.updateGeometryVisibility();
+        this.syncMeshTransformsToMultiview();
+
         this.renderFrame();
     }
 
@@ -439,6 +567,19 @@ export class ThreeJSRenderer {
     }
 
     loadTexture(textureSource) {
+        if (textureSource instanceof HTMLCanvasElement) {
+            const texture = new THREE.CanvasTexture(textureSource);
+            texture.wrapS = THREE.RepeatWrapping;
+            texture.wrapT = THREE.RepeatWrapping;
+            texture.minFilter = THREE.LinearMipmapLinearFilter;
+            texture.magFilter = THREE.LinearFilter;
+            texture.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+            texture.needsUpdate = true;
+            this.uniforms.uTexture.value = texture;
+            this.renderFrame();
+            return Promise.resolve(texture);
+        }
+
         return new Promise((resolve, reject) => {
             this.textureLoader.load(
                 textureSource,
@@ -459,6 +600,15 @@ export class ThreeJSRenderer {
         });
     }
 
+    setMaterialMode(mode = 'standard') {
+        const glassEnabled = mode === 'glass';
+        this.material.transparent = glassEnabled;
+        this.material.depthWrite = !glassEnabled;
+        this.material.needsUpdate = true;
+        this.uniforms.glassMode.value = glassEnabled ? 1.0 : 0.0;
+        this.renderFrame();
+    }
+
     updateMaterial(params) {
         if (!params || !this.material) {
             return;
@@ -467,7 +617,15 @@ export class ThreeJSRenderer {
         const [r, g, b] = params.albedo;
         const roughness = clamp01(params.roughness);
         const metallic = clamp01(params.metallic);
+        const lightIntensity = Math.max(0.1, Math.min(5.0, params.lightIntensity ?? 1.0));
+        const opacity = Math.max(0.0, Math.min(1.0, params.opacity ?? 1.0));
+        const ior = Math.max(1.0, Math.min(2.5, params.ior ?? 1.5));
+        const glassEnabled = params.materialMode === 'glass';
         this.uniforms.baseColor.value.setRGB(clamp01(r), clamp01(g), clamp01(b));
+        this.uniforms.lightIntensity.value = lightIntensity;
+        this.uniforms.opacity.value = opacity;
+        this.uniforms.ior.value = ior;
+        this.uniforms.glassMode.value = glassEnabled ? 1.0 : 0.0;
         this.uniforms.albedoInfluence.value = 0.45 + roughness * 0.2 + (1.0 - metallic) * 0.1;
 
         // Keep the visualization Phong-style while letting BRDF parameters steer it.
@@ -475,6 +633,8 @@ export class ThreeJSRenderer {
         this.uniforms.kd.value = 0.55 + 0.35 * (1.0 - metallic);
         this.uniforms.ks.value = 0.15 + 0.7 * metallic;
         this.uniforms.shininess.value = 8.0 + (1.0 - roughness) * 120.0;
+        this.material.transparent = glassEnabled;
+        this.material.depthWrite = !glassEnabled;
 
         const profileKey = this.materialProfile.key || 'matte';
         if (profileKey === 'fabric') {
@@ -492,6 +652,14 @@ export class ThreeJSRenderer {
             this.uniforms.shininess.value = 12.0 + (1.0 - roughness) * 54.0;
         } else {
             this.uniforms.ks.value *= 0.8;
+        }
+
+        if (glassEnabled) {
+            const fresnelGain = 0.35 + (ior - 1.0) * 0.55;
+            this.uniforms.ks.value = Math.max(this.uniforms.ks.value, 0.55 + fresnelGain);
+            this.uniforms.kd.value *= 0.18;
+            this.uniforms.ka.value *= 0.45;
+            this.uniforms.shininess.value = 110.0 + (1.0 - roughness) * 180.0 + (ior - 1.0) * 55.0;
         }
     }
 
@@ -554,6 +722,18 @@ export class ThreeJSRenderer {
             this.camera.updateProjectionMatrix();
             this.renderer.setSize(width, height);
             this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+
+            if (this.multiviewRenderer && this.multiviewContainer) {
+                const multiviewWidth = this.multiviewContainer.clientWidth;
+                const multiviewHeight = this.multiviewContainer.clientHeight;
+                if (multiviewWidth && multiviewHeight) {
+                    this.multiviewWidth = multiviewWidth;
+                    this.multiviewHeight = multiviewHeight;
+                    this.multiviewRenderer.setSize(multiviewWidth, multiviewHeight);
+                    this.multiviewRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+                }
+            }
+
             this.renderFrame();
         });
     }
@@ -596,14 +776,19 @@ export class ThreeJSRenderer {
         });
 
         this.renderer.domElement.addEventListener('mousemove', (event) => {
-            if (!isDragging || !this.activeMesh) {
+            const activeMesh = this.getActiveMesh();
+            if (!isDragging || !activeMesh) {
                 return;
             }
 
             const deltaX = event.clientX - previousMousePosition.x;
             const deltaY = event.clientY - previousMousePosition.y;
-            this.activeMesh.rotation.x = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, this.activeMesh.rotation.x - deltaY * 0.01));
-            this.activeMesh.rotation.y += deltaX * 0.01;
+            const nextRotationX = Math.max(-Math.PI / 2, Math.min(Math.PI / 2, activeMesh.rotation.x - deltaY * 0.01));
+            const nextRotationY = activeMesh.rotation.y + deltaX * 0.01;
+            Object.values(this.meshes).forEach((mesh) => {
+                mesh.rotation.x = nextRotationX;
+                mesh.rotation.y = nextRotationY;
+            });
             previousMousePosition = { x: event.clientX, y: event.clientY };
         });
 
@@ -650,13 +835,17 @@ export class ThreeJSRenderer {
         this.uniforms.lightPosition.value.copy(this.lightState.position);
         this.uniforms.lightColor.value.copy(this.lightState.color);
         this.lightArrow.setDirection(this.lightState.position.clone().normalize());
+        this.multiviewLightArrow.setDirection(this.lightState.position.clone().normalize());
     }
 
     renderFrame() {
         const start = performance.now();
         this.renderer.setRenderTarget(null);
-        this.renderer.render(this.scene, this.camera);
+        this.syncMeshTransformsToMultiview();
+        this.renderSceneToTarget(null, this.width, this.height);
+        this.renderMultiview();
         this.lastRenderTimeMs = performance.now() - start;
+        this.updateSpecularMetricsIfNeeded();
         return this.lastRenderTimeMs;
     }
 
@@ -670,10 +859,178 @@ export class ThreeJSRenderer {
         const start = performance.now();
         this.renderer.setRenderTarget(this.offscreenTarget);
         this.renderer.clear(true, true, true);
-        this.renderer.render(this.scene, this.camera);
+        this.renderSceneToTarget(this.offscreenTarget, targetWidth, targetHeight);
         this.renderer.setRenderTarget(null);
         this.lastRenderTimeMs = performance.now() - start;
         return this.lastRenderTimeMs;
+    }
+
+    renderSceneToTarget(target, width, height) {
+        const renderWidth = Math.max(1, Math.floor(width));
+        const renderHeight = Math.max(1, Math.floor(height));
+        const originalAspect = this.camera.aspect;
+        this.renderer.clear(true, true, true);
+
+        if (this.currentGeometryMode === 'compare') {
+            const halfWidth = Math.max(1, Math.floor(renderWidth / 2));
+            const originalVisibility = {
+                sphere: this.meshes.sphere.visible,
+                cube: this.meshes.cube.visible
+            };
+
+            this.renderer.setScissorTest(true);
+
+            this.meshes.sphere.visible = true;
+            this.meshes.cube.visible = false;
+            this.camera.aspect = halfWidth / renderHeight;
+            this.camera.updateProjectionMatrix();
+            this.renderer.setViewport(0, 0, halfWidth, renderHeight);
+            this.renderer.setScissor(0, 0, halfWidth, renderHeight);
+            this.renderer.render(this.scene, this.camera);
+
+            this.meshes.sphere.visible = false;
+            this.meshes.cube.visible = true;
+            this.renderer.setViewport(halfWidth, 0, renderWidth - halfWidth, renderHeight);
+            this.renderer.setScissor(halfWidth, 0, renderWidth - halfWidth, renderHeight);
+            this.renderer.render(this.scene, this.camera);
+
+            this.renderer.setScissorTest(false);
+            this.meshes.sphere.visible = originalVisibility.sphere;
+            this.meshes.cube.visible = originalVisibility.cube;
+        } else {
+            this.camera.aspect = renderWidth / renderHeight;
+            this.camera.updateProjectionMatrix();
+            this.renderer.setViewport(0, 0, renderWidth, renderHeight);
+            this.renderer.render(this.scene, this.camera);
+        }
+
+        this.camera.aspect = originalAspect;
+        this.camera.updateProjectionMatrix();
+    }
+
+    renderMultiview() {
+        if (!this.isMultiviewEnabled || !this.multiviewRenderer || !this.multiviewContainer) {
+            return;
+        }
+
+        const width = this.multiviewContainer.clientWidth || this.multiviewWidth;
+        const height = this.multiviewContainer.clientHeight || this.multiviewHeight;
+        if (!width || !height) {
+            return;
+        }
+
+        if (width !== this.multiviewWidth || height !== this.multiviewHeight) {
+            this.multiviewWidth = width;
+            this.multiviewHeight = height;
+            this.multiviewRenderer.setSize(width, height);
+        }
+
+        const halfWidth = Math.max(1, Math.floor(width / 2));
+        const halfHeight = Math.max(1, Math.floor(height / 2));
+        const perspectiveCamera = this.multiviewCameras.perspective;
+
+        this.multiviewLightArrow.visible = false;
+        this.multiviewRenderer.setScissorTest(true);
+        this.multiviewRenderer.clear(true, true, true);
+
+        const viewConfigs = [
+            { camera: this.multiviewCameras.front, x: 0, y: halfHeight, width: halfWidth, height: height - halfHeight, showArrow: false },
+            { camera: this.multiviewCameras.side, x: halfWidth, y: halfHeight, width: width - halfWidth, height: height - halfHeight, showArrow: false },
+            { camera: this.multiviewCameras.top, x: 0, y: 0, width: halfWidth, height: halfHeight, showArrow: false },
+            { camera: perspectiveCamera, x: halfWidth, y: 0, width: width - halfWidth, height: halfHeight, showArrow: true }
+        ];
+
+        viewConfigs.forEach((view) => {
+            view.camera.aspect = Math.max(view.width / Math.max(view.height, 1), 0.1);
+            view.camera.updateProjectionMatrix();
+            this.multiviewLightArrow.visible = view.showArrow;
+            this.multiviewRenderer.setViewport(view.x, view.y, view.width, view.height);
+            this.multiviewRenderer.setScissor(view.x, view.y, view.width, view.height);
+            this.multiviewRenderer.render(this.multiviewScene, view.camera);
+        });
+
+        this.multiviewLightArrow.visible = false;
+        this.multiviewRenderer.setScissorTest(false);
+    }
+
+    setSpecularMetricsListener(listener) {
+        this.specularMetricsListener = typeof listener === 'function' ? listener : null;
+        if (this.specularMetricsListener) {
+            this.specularMetricsListener(this.computeSpecularMetrics());
+        }
+    }
+
+    computeSpecularMetrics() {
+        const shininess = this.uniforms.shininess.value;
+        const metrics = {};
+        const position = new THREE.Vector3();
+        const normal = new THREE.Vector3();
+        const worldPosition = new THREE.Vector3();
+        const worldNormal = new THREE.Vector3();
+        const lightDir = new THREE.Vector3();
+        const viewDir = new THREE.Vector3();
+        const halfVector = new THREE.Vector3();
+        const normalMatrix = new THREE.Matrix3();
+
+        Object.entries(this.meshes).forEach(([key, mesh]) => {
+            if (!mesh?.geometry?.attributes?.position || !mesh.geometry.attributes.normal) {
+                return;
+            }
+
+            mesh.updateMatrixWorld(true);
+            normalMatrix.getNormalMatrix(mesh.matrixWorld);
+
+            const positionAttribute = mesh.geometry.attributes.position;
+            const normalAttribute = mesh.geometry.attributes.normal;
+            let maxSpecular = 0;
+            let maxNdh = 0;
+
+            for (let index = 0; index < positionAttribute.count; index += 1) {
+                position.fromBufferAttribute(positionAttribute, index);
+                normal.fromBufferAttribute(normalAttribute, index);
+                worldPosition.copy(position).applyMatrix4(mesh.matrixWorld);
+                worldNormal.copy(normal).applyMatrix3(normalMatrix).normalize();
+                lightDir.copy(this.lightState.position).sub(worldPosition).normalize();
+                viewDir.copy(this.camera.position).sub(worldPosition).normalize();
+                halfVector.copy(lightDir).add(viewDir);
+
+                if (halfVector.lengthSq() === 0) {
+                    continue;
+                }
+
+                halfVector.normalize();
+                const ndl = Math.max(worldNormal.dot(lightDir), 0.0);
+                const ndh = Math.max(worldNormal.dot(halfVector), 0.0);
+                const specular = ndl > 0.0 ? Math.pow(ndh, shininess) : 0.0;
+
+                if (specular > maxSpecular) {
+                    maxSpecular = specular;
+                    maxNdh = ndh;
+                }
+            }
+
+            metrics[key] = {
+                specularIntensity: maxSpecular,
+                ndhPeak: maxNdh,
+                shininess
+            };
+        });
+
+        return metrics;
+    }
+
+    updateSpecularMetricsIfNeeded(force = false) {
+        if (!this.specularMetricsListener) {
+            return;
+        }
+
+        const now = performance.now();
+        if (!force && now - this.lastSpecularMetricsTimestamp < 90) {
+            return;
+        }
+
+        this.lastSpecularMetricsTimestamp = now;
+        this.specularMetricsListener(this.computeSpecularMetrics());
     }
 
     captureNormalizedPixels(width = 64, height = 64, cropScale = 1.0) {
@@ -706,13 +1063,17 @@ export class ThreeJSRenderer {
         const previousAutoRotate = this.autoRotate;
         const previousRenderMode = this.currentRenderMode;
         const previousArrowVisible = this.lightArrow.visible;
-        const previousScale = this.activeMesh ? this.activeMesh.scale.clone() : null;
+        const previousMode = this.currentGeometryMode;
+        const previousScales = Object.fromEntries(
+            Object.entries(this.meshes).map(([key, mesh]) => [key, mesh.scale.clone()])
+        );
         const previousLightPosition = this.lightState.position.clone();
         const previousLightColor = this.lightState.color.clone();
         const previousClearColor = this.renderer.getClearColor(new THREE.Color()).clone();
         const previousClearAlpha = this.renderer.getClearAlpha();
         const previousCameraZ = this.camera.position.z;
         const previousCameraAspect = this.camera.aspect;
+        const snapshotGeometry = options.snapshotGeometry || (previousMode === 'compare' ? 'sphere' : previousMode);
 
         this.autoRotate = false;
         if (this.controls) {
@@ -722,8 +1083,11 @@ export class ThreeJSRenderer {
 
         this.lightArrow.visible = options.showLightHelper === true;
         this.renderer.setClearColor(0x000000, 0);
-        if (this.activeMesh && options.snapshotScale) {
-            this.activeMesh.scale.setScalar(options.snapshotScale);
+        this.setGeometryMode(snapshotGeometry);
+        if (options.snapshotScale) {
+            Object.values(this.meshes).forEach((mesh) => {
+                mesh.scale.setScalar(options.snapshotScale);
+            });
         }
         if (options.snapshotCameraZ) {
             this.camera.position.z = options.snapshotCameraZ;
@@ -760,19 +1124,23 @@ export class ThreeJSRenderer {
         if (this.controls) {
             this.controls.autoRotate = previousAutoRotate;
         }
-        if (this.activeMesh && previousScale) {
-            this.activeMesh.scale.copy(previousScale);
-        }
+        Object.entries(previousScales).forEach(([key, scale]) => {
+            if (this.meshes[key]) {
+                this.meshes[key].scale.copy(scale);
+            }
+        });
         this.lightArrow.visible = previousArrowVisible;
         this.lightState.position.copy(previousLightPosition);
         this.lightState.color.copy(previousLightColor);
         this.uniforms.lightPosition.value.copy(previousLightPosition);
         this.uniforms.lightColor.value.copy(previousLightColor);
         this.lightArrow.setDirection(previousLightPosition.clone().normalize());
+        this.multiviewLightArrow.setDirection(previousLightPosition.clone().normalize());
         this.renderer.setClearColor(previousClearColor, previousClearAlpha);
         this.camera.position.z = previousCameraZ;
         this.camera.aspect = previousCameraAspect;
         this.camera.updateProjectionMatrix();
+        this.setGeometryMode(previousMode);
         this.setRenderMode(previousRenderMode);
         this.renderFrame();
 
@@ -802,8 +1170,10 @@ export class ThreeJSRenderer {
 
         if (this.controls) {
             this.controls.update();
-        } else if (this.autoRotate && this.activeMesh) {
-            this.activeMesh.rotation.y += 0.01;
+        } else if (this.autoRotate && this.getActiveMesh()) {
+            Object.values(this.meshes).forEach((mesh) => {
+                mesh.rotation.y += 0.01;
+            });
         }
 
         this.renderFrame();

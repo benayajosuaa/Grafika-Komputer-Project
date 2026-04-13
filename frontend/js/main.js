@@ -10,6 +10,153 @@ function createFallbackMaterialProfile() {
     };
 }
 
+function createProceduralCanvas(size = 256) {
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    return canvas;
+}
+
+function clampChannel(value) {
+    return Math.max(0, Math.min(255, Math.round(value)));
+}
+
+function createTexturePresets() {
+    const presets = {
+        'red-ceramic': {
+            label: 'Red Ceramic',
+            parameters: { albedo: [0.76, 0.23, 0.18], roughness: 0.42, metallic: 0.05 },
+            draw: (context, size) => {
+                context.fillStyle = '#efe7df';
+                context.fillRect(0, 0, size, size);
+                const tile = size / 4;
+                for (let y = 0; y < 4; y += 1) {
+                    for (let x = 0; x < 4; x += 1) {
+                        context.fillStyle = `rgb(${150 + (x + y) * 8}, ${46 + y * 6}, ${38 + x * 4})`;
+                        context.fillRect(x * tile + 4, y * tile + 4, tile - 8, tile - 8);
+                    }
+                }
+            }
+        },
+        'blue-plastic': {
+            label: 'Blue Plastic',
+            parameters: { albedo: [0.18, 0.45, 0.86], roughness: 0.28, metallic: 0.08 },
+            draw: (context, size) => {
+                const gradient = context.createLinearGradient(0, 0, size, size);
+                gradient.addColorStop(0, '#4ea0ff');
+                gradient.addColorStop(1, '#174ea6');
+                context.fillStyle = gradient;
+                context.fillRect(0, 0, size, size);
+                const image = context.getImageData(0, 0, size, size);
+                for (let index = 0; index < image.data.length; index += 4) {
+                    const noise = (Math.random() - 0.5) * 24;
+                    image.data[index] = clampChannel(image.data[index] + noise);
+                    image.data[index + 1] = clampChannel(image.data[index + 1] + noise);
+                    image.data[index + 2] = clampChannel(image.data[index + 2] + noise * 1.4);
+                }
+                context.putImageData(image, 0, 0);
+            }
+        },
+        'green-fabric': {
+            label: 'Green Fabric',
+            parameters: { albedo: [0.24, 0.63, 0.33], roughness: 0.74, metallic: 0.02 },
+            draw: (context, size) => {
+                context.fillStyle = '#2e7d44';
+                context.fillRect(0, 0, size, size);
+                context.strokeStyle = 'rgba(200, 255, 210, 0.24)';
+                context.lineWidth = 2;
+                const spacing = 12;
+                for (let index = -size; index < size * 2; index += spacing) {
+                    context.beginPath();
+                    context.moveTo(index, 0);
+                    context.lineTo(index - size, size);
+                    context.stroke();
+                    context.beginPath();
+                    context.moveTo(index, size);
+                    context.lineTo(index - size, 0);
+                    context.stroke();
+                }
+            }
+        },
+        'gold-metal': {
+            label: 'Gold Metal',
+            parameters: { albedo: [0.88, 0.71, 0.21], roughness: 0.14, metallic: 0.96 },
+            draw: (context, size) => {
+                const gradient = context.createLinearGradient(0, 0, size, size);
+                gradient.addColorStop(0, '#fff2a8');
+                gradient.addColorStop(0.35, '#d9ae2b');
+                gradient.addColorStop(0.7, '#8a6110');
+                gradient.addColorStop(1, '#f7cf5f');
+                context.fillStyle = gradient;
+                context.fillRect(0, 0, size, size);
+                context.strokeStyle = 'rgba(255,255,255,0.18)';
+                for (let x = 0; x < size; x += 8) {
+                    context.beginPath();
+                    context.moveTo(x, 0);
+                    context.lineTo(x - size * 0.18, size);
+                    context.stroke();
+                }
+            }
+        },
+        'white-marble': {
+            label: 'White Marble',
+            parameters: { albedo: [0.94, 0.94, 0.95], roughness: 0.36, metallic: 0.01 },
+            draw: (context, size) => {
+                context.fillStyle = '#f4f5f7';
+                context.fillRect(0, 0, size, size);
+                context.lineWidth = 3;
+                for (let index = 0; index < 11; index += 1) {
+                    context.strokeStyle = index % 2 === 0 ? 'rgba(120, 130, 145, 0.28)' : 'rgba(168, 175, 188, 0.22)';
+                    context.beginPath();
+                    const startY = Math.random() * size;
+                    context.moveTo(-10, startY);
+                    for (let step = 0; step <= 6; step += 1) {
+                        const x = (size / 6) * step;
+                        const y = startY + Math.sin((step + index) * 1.4) * 18 + (Math.random() - 0.5) * 26;
+                        context.lineTo(x, y);
+                    }
+                    context.stroke();
+                }
+            }
+        },
+        'dark-leather': {
+            label: 'Dark Leather',
+            parameters: { albedo: [0.22, 0.14, 0.1], roughness: 0.68, metallic: 0.0 },
+            draw: (context, size) => {
+                const gradient = context.createLinearGradient(0, 0, 0, size);
+                gradient.addColorStop(0, '#4a2e23');
+                gradient.addColorStop(1, '#24150f');
+                context.fillStyle = gradient;
+                context.fillRect(0, 0, size, size);
+                const image = context.getImageData(0, 0, size, size);
+                for (let index = 0; index < image.data.length; index += 4) {
+                    const grain = (Math.random() - 0.5) * 38;
+                    image.data[index] = clampChannel(image.data[index] + grain);
+                    image.data[index + 1] = clampChannel(image.data[index + 1] + grain * 0.65);
+                    image.data[index + 2] = clampChannel(image.data[index + 2] + grain * 0.45);
+                }
+                context.putImageData(image, 0, 0);
+                context.strokeStyle = 'rgba(255,255,255,0.05)';
+                for (let index = 0; index < 22; index += 1) {
+                    context.beginPath();
+                    context.ellipse(Math.random() * size, Math.random() * size, 12 + Math.random() * 16, 6 + Math.random() * 10, Math.random() * Math.PI, 0, Math.PI * 2);
+                    context.stroke();
+                }
+            }
+        }
+    };
+
+    return Object.fromEntries(Object.entries(presets).map(([key, preset]) => [key, {
+        ...preset,
+        createCanvas: () => {
+            const canvas = createProceduralCanvas();
+            const context = canvas.getContext('2d', { willReadFrequently: true });
+            preset.draw(context, canvas.width);
+            return canvas;
+        }
+    }]));
+}
+
 class BRDFApp {
     constructor() {
         this.isOptimizing = false;
@@ -19,10 +166,16 @@ class BRDFApp {
         this.currentAblationResult = null;
         this.currentBatchResult = null;
         this.currentMaterialProfile = createFallbackMaterialProfile();
+        this.texturePresets = createTexturePresets();
+        this.currentTexturePreset = null;
         this.parameters = {
             albedo: [0.5, 0.5, 0.5],
             roughness: 0.5,
-            metallic: 0.0
+            metallic: 0.0,
+            lightIntensity: 1.0,
+            opacity: 1.0,
+            ior: 1.5,
+            materialMode: 'standard'
         };
         this.lossHistory = [];
         this.gradientHistory = [];
@@ -32,6 +185,7 @@ class BRDFApp {
             loss: null
         };
         this.charts = {};
+        this.multiviewVisible = false;
 
         this.initializeRenderer();
         this.experimentRunner = new ExperimentRunner({
@@ -49,12 +203,14 @@ class BRDFApp {
         this.updateSystemInfo();
         this.startPerformanceProbe();
         this.updateMaterialProfileDisplay();
+        this.setMaterialMode(this.parameters.materialMode);
         this.updatePreview();
         this.exposeResearchApi();
     }
 
     initializeRenderer() {
         this.renderer = new ThreeJSRenderer('canvas-container');
+        this.renderer.setSpecularMetricsListener((metrics) => this.updateSpecularMetricsDisplay(metrics));
     }
 
     exposeResearchApi() {
@@ -122,6 +278,48 @@ class BRDFApp {
             });
         }
 
+        const lightIntensityElement = document.getElementById('light-intensity');
+        if (lightIntensityElement) {
+            lightIntensityElement.addEventListener('input', (event) => {
+                this.parameters.lightIntensity = parseFloat(event.target.value);
+                this.updateParameterDisplay();
+                this.updatePreview();
+            });
+        }
+
+        const opacityElement = document.getElementById('opacity');
+        if (opacityElement) {
+            opacityElement.addEventListener('input', (event) => {
+                this.parameters.opacity = parseFloat(event.target.value);
+                this.updateParameterDisplay();
+                this.updatePreview();
+            });
+        }
+
+        const iorElement = document.getElementById('ior');
+        if (iorElement) {
+            iorElement.addEventListener('input', (event) => {
+                this.parameters.ior = parseFloat(event.target.value);
+                this.updateParameterDisplay();
+                this.updatePreview();
+            });
+        }
+
+        const standardModeBtn = document.getElementById('material-mode-standard');
+        if (standardModeBtn) standardModeBtn.addEventListener('click', () => this.setMaterialMode('standard'));
+
+        const glassModeBtn = document.getElementById('material-mode-glass');
+        if (glassModeBtn) glassModeBtn.addEventListener('click', () => this.setMaterialMode('glass'));
+
+        Object.keys(this.texturePresets).forEach((presetKey) => {
+            const button = document.getElementById(`preset-${presetKey}`);
+            if (!button) {
+                return;
+            }
+
+            button.addEventListener('click', () => this.applyTexturePreset(presetKey));
+        });
+
         const startBtn = document.getElementById('start-optimize');
         if (startBtn) startBtn.addEventListener('click', () => this.startOptimization());
 
@@ -136,6 +334,12 @@ class BRDFApp {
 
         const cubeBtn = document.getElementById('geometry-cube');
         if (cubeBtn) cubeBtn.addEventListener('click', () => this.setGeometryMode('cube'));
+
+        const compareBtn = document.getElementById('geometry-compare');
+        if (compareBtn) compareBtn.addEventListener('click', () => this.setGeometryMode('compare'));
+
+        const multiviewBtn = document.getElementById('toggle-multiview');
+        if (multiviewBtn) multiviewBtn.addEventListener('click', () => this.toggleMultiview());
 
         const exportParamsBtn = document.getElementById('export-params');
         if (exportParamsBtn) exportParamsBtn.addEventListener('click', () => this.exportExperimentResults('json'));
@@ -299,6 +503,15 @@ class BRDFApp {
         const imageUrl = URL.createObjectURL(file);
         this.currentImage = imageUrl;
         this.currentImageId = file.name || `image-${Date.now()}`;
+        this.currentTexturePreset = null;
+
+        Object.keys(this.texturePresets).forEach((key) => {
+            const button = document.getElementById(`preset-${key}`);
+            if (button) {
+                button.classList.remove('is-active', 'btn-primary');
+                button.classList.add('btn-secondary');
+            }
+        });
 
         const inputImage = document.getElementById('input-image');
         if (inputImage) {
@@ -325,6 +538,7 @@ class BRDFApp {
         });
 
         this.parameters = {
+            ...this.parameters,
             albedo: [...heuristicParameters.albedo],
             roughness: heuristicParameters.roughness,
             metallic: heuristicParameters.metallic
@@ -350,6 +564,69 @@ class BRDFApp {
         this.updateMaterialProfileDisplay();
     }
 
+    setMaterialMode(mode = 'standard') {
+        this.parameters.materialMode = mode === 'glass' ? 'glass' : 'standard';
+        this.renderer.setMaterialMode(this.parameters.materialMode);
+
+        const glassControls = document.getElementById('glass-controls');
+        if (glassControls) {
+            glassControls.classList.toggle('is-hidden', this.parameters.materialMode !== 'glass');
+        }
+
+        const canvasContainer = document.getElementById('canvas-container');
+        if (canvasContainer) {
+            canvasContainer.classList.toggle('is-glass-mode', this.parameters.materialMode === 'glass');
+        }
+
+        ['standard', 'glass'].forEach((materialMode) => {
+            const button = document.getElementById(`material-mode-${materialMode}`);
+            if (!button) {
+                return;
+            }
+
+            const active = materialMode === this.parameters.materialMode;
+            button.classList.toggle('is-active', active);
+            button.classList.toggle('btn-primary', active);
+            button.classList.toggle('btn-secondary', !active);
+        });
+
+        this.updatePreview();
+    }
+
+    async applyTexturePreset(presetKey) {
+        const preset = this.texturePresets[presetKey];
+        if (!preset) {
+            return;
+        }
+
+        this.currentTexturePreset = presetKey;
+        this.parameters = {
+            ...this.parameters,
+            albedo: [...preset.parameters.albedo],
+            roughness: preset.parameters.roughness,
+            metallic: preset.parameters.metallic
+        };
+
+        const textureCanvas = preset.createCanvas();
+        await this.renderer.loadTexture(textureCanvas);
+        this.syncSlidersToParameters();
+        this.updateParameterDisplay();
+
+        Object.keys(this.texturePresets).forEach((key) => {
+            const button = document.getElementById(`preset-${key}`);
+            if (!button) {
+                return;
+            }
+
+            const active = key === presetKey;
+            button.classList.toggle('btn-primary', active);
+            button.classList.toggle('btn-secondary', !active);
+            button.classList.toggle('is-active', active);
+        });
+
+        this.updatePreview();
+    }
+
     updateMaterialProfileDisplay() {
         const labelElement = document.getElementById('material-profile-label');
         const descriptionElement = document.getElementById('material-profile-description');
@@ -372,7 +649,10 @@ class BRDFApp {
             'albedo-g': Math.round(this.parameters.albedo[1] * 100),
             'albedo-b': Math.round(this.parameters.albedo[2] * 100),
             roughness: Math.round(this.parameters.roughness * 100),
-            metallic: Math.round(this.parameters.metallic * 100)
+            metallic: Math.round(this.parameters.metallic * 100),
+            'light-intensity': (this.parameters.lightIntensity || 1.0).toFixed(1),
+            opacity: (this.parameters.opacity ?? 1.0).toFixed(2),
+            ior: (this.parameters.ior ?? 1.5).toFixed(2)
         };
 
         Object.entries(sliderMap).forEach(([id, value]) => {
@@ -396,6 +676,9 @@ class BRDFApp {
         updateElement('albedo-b-val', this.parameters.albedo[2].toFixed(2));
         updateElement('roughness-val', this.parameters.roughness.toFixed(2));
         updateElement('metallic-val', this.parameters.metallic.toFixed(2));
+        updateElement('light-intensity-val', (this.parameters.lightIntensity || 1.0).toFixed(2));
+        updateElement('opacity-val', (this.parameters.opacity ?? 1.0).toFixed(2));
+        updateElement('ior-val', (this.parameters.ior ?? 1.5).toFixed(2));
 
         const previewElement = document.getElementById('albedo-preview');
         if (previewElement) {
@@ -414,15 +697,41 @@ class BRDFApp {
         this.syncRenderedImagePreview();
     }
 
+    toggleMultiview() {
+        this.multiviewVisible = !this.multiviewVisible;
+
+        const panel = document.getElementById('multiview-panel');
+        if (panel) {
+            panel.classList.toggle('is-hidden', !this.multiviewVisible);
+        }
+
+        const button = document.getElementById('toggle-multiview');
+        if (button) {
+            button.textContent = this.multiviewVisible ? 'Hide Multiview' : 'Multiview';
+            button.classList.toggle('is-active', this.multiviewVisible);
+            button.classList.toggle('btn-primary', this.multiviewVisible);
+            button.classList.toggle('btn-secondary', !this.multiviewVisible);
+        }
+
+        this.renderer.setMultiviewEnabled(this.multiviewVisible);
+        if (this.multiviewVisible) {
+            this.renderer.renderFrame();
+        }
+    }
+
     setGeometryMode(mode) {
         this.renderer.setGeometryMode(mode);
 
         const modeLabel = document.getElementById('geometry-mode-label');
         if (modeLabel) {
-            modeLabel.textContent = mode === 'cube' ? 'Cube' : 'Sphere';
+            modeLabel.textContent = mode === 'compare'
+                ? 'Compare Mode (Sphere vs Cube)'
+                : mode === 'cube'
+                    ? 'Cube'
+                    : 'Sphere';
         }
 
-        ['sphere', 'cube'].forEach((geometryMode) => {
+        ['sphere', 'cube', 'compare'].forEach((geometryMode) => {
             const button = document.getElementById(`geometry-${geometryMode}`);
             if (!button) {
                 return;
@@ -433,7 +742,40 @@ class BRDFApp {
             button.classList.toggle('btn-secondary', geometryMode !== mode);
         });
 
+        this.updateSpecularMetricsDisplay(this.renderer.computeSpecularMetrics());
         this.syncRenderedImagePreview();
+    }
+
+    updateSpecularMetricsDisplay(metrics = {}) {
+        const geometries = ['sphere', 'cube'];
+        const currentMode = this.renderer?.currentGeometryMode || 'sphere';
+
+        geometries.forEach((geometry) => {
+            const card = document.getElementById(`specular-card-${geometry}`);
+            if (card) {
+                const shouldShow = currentMode === 'compare' || currentMode === geometry;
+                card.classList.toggle('is-hidden', !shouldShow);
+            }
+
+            const geometryMetrics = metrics[geometry];
+            if (!geometryMetrics) {
+                return;
+            }
+
+            const intensityElement = document.getElementById(`specular-${geometry}-intensity`);
+            const ndhElement = document.getElementById(`specular-${geometry}-ndh`);
+            const shininessElement = document.getElementById(`specular-${geometry}-shininess`);
+
+            if (intensityElement) {
+                intensityElement.textContent = geometryMetrics.specularIntensity.toFixed(6);
+            }
+            if (ndhElement) {
+                ndhElement.textContent = geometryMetrics.ndhPeak.toFixed(6);
+            }
+            if (shininessElement) {
+                shininessElement.textContent = geometryMetrics.shininess.toFixed(2);
+            }
+        });
     }
 
     syncRenderedImagePreview() {
@@ -483,6 +825,7 @@ class BRDFApp {
                     }
 
                     this.parameters = {
+                        ...this.parameters,
                         albedo: [...logEntry.parameters.albedo],
                         roughness: logEntry.parameters.roughness,
                         metallic: logEntry.parameters.metallic
@@ -505,6 +848,7 @@ class BRDFApp {
 
             this.currentExperimentResult = result;
             this.parameters = {
+                ...this.parameters,
                 albedo: [...result.final_parameters.albedo],
                 roughness: result.final_parameters.roughness,
                 metallic: result.final_parameters.metallic
@@ -557,8 +901,13 @@ class BRDFApp {
         this.parameters = {
             albedo: [0.5, 0.5, 0.5],
             roughness: 0.5,
-            metallic: 0.0
+            metallic: 0.0,
+            lightIntensity: 1.0,
+            opacity: 1.0,
+            ior: 1.5,
+            materialMode: 'standard'
         };
+        this.currentTexturePreset = null;
         this.applyMaterialProfile(
             this.currentImageId ? this.experimentRunner.getMaterialProfile(this.currentImageId) : createFallbackMaterialProfile()
         );
@@ -569,6 +918,14 @@ class BRDFApp {
         this.currentBatchResult = null;
         this.syncSlidersToParameters();
         this.updateParameterDisplay();
+        this.setMaterialMode(this.parameters.materialMode);
+        Object.keys(this.texturePresets).forEach((key) => {
+            const button = document.getElementById(`preset-${key}`);
+            if (button) {
+                button.classList.remove('is-active', 'btn-primary');
+                button.classList.add('btn-secondary');
+            }
+        });
         this.updatePreview();
         this.updateConvergenceCharts([]);
         this.updateMetricsDisplay();

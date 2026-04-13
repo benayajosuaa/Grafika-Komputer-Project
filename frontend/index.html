@@ -78,6 +78,46 @@
                         <input type="range" id="metallic" min="0" max="100" value="0">
                         <span id="metallic-val">0.00</span>
                     </div>
+
+                    <div class="parameter-control">
+                        <label>Light Intensity</label>
+                        <input type="range" id="light-intensity" min="0.1" max="5.0" step="0.1" value="1.0">
+                        <span id="light-intensity-val">1.00</span>
+                    </div>
+
+                    <div class="parameter-control">
+                        <label>Material Mode</label>
+                        <div class="geometry-toggle material-mode-toggle">
+                            <button id="material-mode-standard" class="btn btn-primary geometry-btn is-active">Standard</button>
+                            <button id="material-mode-glass" class="btn btn-secondary geometry-btn">Glass / Transparent</button>
+                        </div>
+                    </div>
+
+                    <div id="glass-controls" class="glass-controls is-hidden">
+                        <div class="parameter-control">
+                            <label>Opacity</label>
+                            <input type="range" id="opacity" min="0.0" max="1.0" step="0.01" value="1.0">
+                            <span id="opacity-val">1.00</span>
+                        </div>
+
+                        <div class="parameter-control">
+                            <label>IOR</label>
+                            <input type="range" id="ior" min="1.0" max="2.5" step="0.05" value="1.5">
+                            <span id="ior-val">1.50</span>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="control-group">
+                    <h3>Texture Presets</h3>
+                    <div class="preset-grid">
+                        <button id="preset-red-ceramic" class="btn btn-secondary preset-btn">Red Ceramic</button>
+                        <button id="preset-blue-plastic" class="btn btn-secondary preset-btn">Blue Plastic</button>
+                        <button id="preset-green-fabric" class="btn btn-secondary preset-btn">Green Fabric</button>
+                        <button id="preset-gold-metal" class="btn btn-secondary preset-btn">Gold Metal</button>
+                        <button id="preset-white-marble" class="btn btn-secondary preset-btn">White Marble</button>
+                        <button id="preset-dark-leather" class="btn btn-secondary preset-btn">Dark Leather</button>
+                    </div>
                 </div>
 
                 <!-- Optimization Controls -->
@@ -93,6 +133,8 @@
                     <div class="geometry-toggle">
                         <button id="geometry-sphere" class="btn btn-primary geometry-btn is-active">Sphere</button>
                         <button id="geometry-cube" class="btn btn-secondary geometry-btn">Cube</button>
+                        <button id="geometry-compare" class="btn btn-secondary geometry-btn geometry-btn-wide">Compare Mode</button>
+                        <button id="toggle-multiview" class="btn btn-secondary geometry-btn geometry-btn-wide">Multiview</button>
                     </div>
                 </div>
 
@@ -118,6 +160,67 @@
             <div class="panel center-panel">
                 <h2>3D BRDF Visualization</h2>
                 <div id="canvas-container" class="canvas-container"></div>
+                <div id="multiview-panel" class="multiview-panel is-hidden">
+                    <div class="multiview-header">
+                        <h3>Multiview Panel</h3>
+                        <p>Empat kamera tetap untuk memantau BRDF dan bentuk selama optimasi berjalan.</p>
+                    </div>
+                    <div class="multiview-canvas-shell">
+                        <div id="multiview-container" class="multiview-container"></div>
+                        <div class="multiview-label multiview-label-front">FRONT</div>
+                        <div class="multiview-label multiview-label-side">SIDE</div>
+                        <div class="multiview-label multiview-label-top">TOP</div>
+                        <div class="multiview-label multiview-label-persp">PERSP</div>
+                    </div>
+                </div>
+                <div class="compare-stats" id="compare-stats">
+                    <div class="compare-stat-card" id="specular-card-sphere">
+                        <h3>Sphere Highlight</h3>
+                        <table class="specular-table">
+                            <tbody>
+                                <tr>
+                                    <th>Geometry</th>
+                                    <td>Sphere</td>
+                                </tr>
+                                <tr>
+                                    <th>`dot(N,H)^shininess`</th>
+                                    <td id="specular-sphere-intensity">0.000000</td>
+                                </tr>
+                                <tr>
+                                    <th>`N·H` Peak</th>
+                                    <td id="specular-sphere-ndh">0.000000</td>
+                                </tr>
+                                <tr>
+                                    <th>Shininess</th>
+                                    <td id="specular-sphere-shininess">24.00</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="compare-stat-card" id="specular-card-cube">
+                        <h3>Cube Highlight</h3>
+                        <table class="specular-table">
+                            <tbody>
+                                <tr>
+                                    <th>Geometry</th>
+                                    <td>Cube</td>
+                                </tr>
+                                <tr>
+                                    <th>`dot(N,H)^shininess`</th>
+                                    <td id="specular-cube-intensity">0.000000</td>
+                                </tr>
+                                <tr>
+                                    <th>`N·H` Peak</th>
+                                    <td id="specular-cube-ndh">0.000000</td>
+                                </tr>
+                                <tr>
+                                    <th>Shininess</th>
+                                    <td id="specular-cube-shininess">24.00</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
                 <div class="viewer-caption">
                     <p class="help-text">Drag to rotate | Scroll to zoom | Space to toggle auto-rotate</p>
                     <p class="viewer-mode-label">Proxy geometry: <span id="geometry-mode-label">Sphere</span></p>
