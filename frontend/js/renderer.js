@@ -107,6 +107,9 @@ const FRAGMENT_SHADER = `
     uniform vec3 sheenTint;
     uniform vec3 textureMean;
     uniform vec2 grainDirection;
+    uniform vec3 hemiSkyColor;
+    uniform vec3 hemiGroundColor;
+    uniform float hemiIntensity;
 
     varying vec3 vWorldPosition;
     varying vec3 vLocalPosition;
@@ -157,6 +160,19 @@ const FRAGMENT_SHADER = `
         vec3 zSample = texture2D(textureSampler, zAxisUv).rgb;
 
         return xSample * blending.x + ySample * blending.y + zSample * blending.z;
+    }
+
+    vec3 acesTonemap(vec3 color) {
+        const float a = 2.51;
+        const float b = 0.03;
+        const float c = 2.43;
+        const float d = 0.59;
+        const float e = 0.14;
+        return clamp((color * (a * color + b)) / (color * (c * color + d) + e), 0.0, 1.0);
+    }
+
+    vec3 applyGamma(vec3 color) {
+        return pow(max(color, vec3(0.0)), vec3(1.0 / 2.2));
     }
 
     void main() {
@@ -215,12 +231,13 @@ const FRAGMENT_SHADER = `
             float weave = mix(detailMask, fiber, 0.65);
             profileTexture = detailTexture * mix(0.82, 1.12, pow(weave, detailContrast));
             profileSpecularBoost *= 0.55;
-            sheen = sheenStrength * pow(1.0 - max(dot(n, v), 0.0), 2.2) * mix(0.35, 1.0, weave);
+            float rimFresnel = pow(1.0 - max(dot(n, v), 0.0), 3.2);
+            sheen = sheenStrength * rimFresnel * mix(0.6, 1.35, weave);
         } else if (surfaceProfile < 2.5) {
             float metalBand = mix(detailMask, brushed, 0.5);
             profileTexture = mix(detailTexture, vec3(dot(detailTexture, vec3(0.299, 0.587, 0.114))), 0.28);
             profileTexture *= mix(0.9, 1.18, pow(metalBand, max(1.0, detailContrast)));
-            profileSpecularBoost *= 1.35;
+            profileSpecularBoost *= 1.9;
             sheen = sheenStrength * 0.25 * pow(max(dot(v, r), 0.0), 6.0);
         } else if (surfaceProfile < 3.5) {
             float grain = mix(detailMask, woodGrain, 0.72);
@@ -235,12 +252,18 @@ const FRAGMENT_SHADER = `
         } else {
             float granular = mix(detailMask, pores, 0.6);
             profileTexture = detailTexture * mix(0.8, 1.05, granular);
-            profileSpecularBoost *= 0.65;
+            profileSpecularBoost *= 0.46;
+            specularTerm = pow(max(dot(v, r), 0.0), max(2.0, shininess * 0.52));
             sheen = sheenStrength * 0.15 * granular;
         }
 
-        vec3 ambient = ka * effectiveLightColor;
+        float hemiFactor = clamp(n.y * 0.5 + 0.5, 0.0, 1.0);
+        vec3 hemiAmbient = mix(hemiGroundColor, hemiSkyColor, hemiFactor) * hemiIntensity;
+        vec3 ambient = ka * effectiveLightColor + hemiAmbient;
         vec3 diffuse = kd * effectiveLightColor * diffuseTerm;
+        if (surfaceProfile > 1.5 && surfaceProfile < 2.5) {
+            diffuse *= 0.52;
+        }
         vec3 specularTint = mix(vec3(1.0), baseColor, surfaceProfile > 1.5 && surfaceProfile < 2.5 ? 0.35 : 0.18);
         vec3 specularColor = mix(effectiveLightColor, specularTint, clamp(surfaceProfile > 1.5 && surfaceProfile < 2.5 ? 0.55 : 0.08, 0.0, 1.0));
         vec3 specular = ks * profileSpecularBoost * specularColor * specularTerm;
@@ -252,8 +275,9 @@ const FRAGMENT_SHADER = `
         float transmission = mix(1.0, 0.3, glassMode);
         vec3 glassColor = mix(finalColor * transmission, vec3(1.0) * effectiveLightColor * fresnel * 1.25, clamp(glassMode, 0.0, 1.0));
         float alpha = mix(1.0, opacity, glassMode);
-
-        gl_FragColor = vec4(mix(finalColor, glassColor, glassMode), alpha);
+        vec3 mapped = acesTonemap(mix(finalColor, glassColor, glassMode));
+        vec3 outputColor = applyGamma(mapped);
+        gl_FragColor = vec4(outputColor, alpha);
     }
 `;
 
@@ -427,7 +451,10 @@ export class ThreeJSRenderer {
             albedoInfluence: { value: 0.58 },
             sheenTint: { value: new THREE.Color(...this.materialProfile.sheenTint) },
             textureMean: { value: new THREE.Color(0.65, 0.65, 0.65) },
-            grainDirection: { value: new THREE.Vector2(...this.materialProfile.grainDirection) }
+            grainDirection: { value: new THREE.Vector2(...this.materialProfile.grainDirection) },
+            hemiSkyColor: { value: new THREE.Color(0.76, 0.82, 0.9) },
+            hemiGroundColor: { value: new THREE.Color(0.26, 0.24, 0.22) },
+            hemiIntensity: { value: 0.24 }
         };
 
         return new THREE.ShaderMaterial({
@@ -641,8 +668,8 @@ export class ThreeJSRenderer {
             this.uniforms.ks.value *= 0.45 + (1.0 - roughness) * 0.25;
             this.uniforms.shininess.value = 10.0 + (1.0 - roughness) * 36.0;
         } else if (profileKey === 'metal') {
-            this.uniforms.ks.value = Math.max(this.uniforms.ks.value, 0.55 + metallic * 0.5);
-            this.uniforms.kd.value *= 0.72;
+            this.uniforms.ks.value = Math.max(this.uniforms.ks.value, 0.78 + metallic * 0.62);
+            this.uniforms.kd.value *= 0.56;
             this.uniforms.shininess.value = 28.0 + (1.0 - roughness) * 160.0;
         } else if (profileKey === 'plastic') {
             this.uniforms.ks.value *= 1.1;
@@ -651,7 +678,8 @@ export class ThreeJSRenderer {
             this.uniforms.ks.value *= 0.72;
             this.uniforms.shininess.value = 12.0 + (1.0 - roughness) * 54.0;
         } else {
-            this.uniforms.ks.value *= 0.8;
+            this.uniforms.ks.value *= 0.62;
+            this.uniforms.shininess.value = 6.0 + (1.0 - roughness) * 44.0;
         }
 
         if (glassEnabled) {

@@ -1,7 +1,7 @@
 import { ExperimentLogger } from './experiment_logger.js?v=20260413b';
 import { ExperimentExporter } from './exporter.js?v=20260413b';
-import { aggregateBatchMetrics, analyzeConvergence, clamp01, computeFinalMetrics, detectConvergence, sanitizeParameters } from './metrics.js?v=20260413b';
-import { FiniteDifferenceOptimizer } from './optimizer.js?v=20260413b';
+import { aggregateBatchMetrics, analyzeConvergence, clamp01, computeFinalMetrics, detectConvergence, sanitizeParameters } from './metrics.js?v=20260420a';
+import { FiniteDifferenceOptimizer } from './optimizer.js?v=20260420a';
 import { SeededRNG, createSeededRandom } from './research_rng.js?v=20260413b';
 
 function cloneParameters(parameters) {
@@ -297,10 +297,12 @@ export class ExperimentRunner {
             image_id: '',
             init_type: 'heuristic',
             max_iterations: 40,
-            learning_rate: 0.05,
-            epsilon: 0.01,
+            learning_rate: 0.03,
+            adam_beta1: 0.9,
+            adam_beta2: 0.999,
+            adam_epsilon: 1e-8,
             clamp_enabled: true,
-            optimize_albedo: false,
+            optimize_albedo: true,
             seed: 1,
             ...overrides
         };
@@ -560,6 +562,8 @@ export class ExperimentRunner {
 
         const convergence = analyzeConvergence(optimizerResult.logs);
         const convergenceDetection = detectConvergence(optimizerResult.logs, 1e-4, 5);
+        const convergenceReason = optimizerResult.convergence_reason || convergenceDetection.reason || 'max_iterations_reached';
+        metrics.convergence_reason = convergenceReason;
         const result = {
             config: { ...config },
             experiment_config: { ...config },
@@ -568,18 +572,64 @@ export class ExperimentRunner {
             final_parameters: cloneParameters(optimizerResult.final_parameters),
             convergence_curve: {
                 loss_vs_iteration: convergence.loss_curve,
-                gradient_norm_vs_iteration: convergence.gradient_magnitude_curve
+                gradient_norm_vs_iteration: convergence.gradient_magnitude_curve,
+                parameter_trajectory: {
+                    albedo_r: optimizerResult.logs.map((entry) => entry.parameters.albedo[0]),
+                    albedo_g: optimizerResult.logs.map((entry) => entry.parameters.albedo[1]),
+                    albedo_b: optimizerResult.logs.map((entry) => entry.parameters.albedo[2]),
+                    roughness: optimizerResult.logs.map((entry) => entry.parameters.roughness),
+                    metallic: optimizerResult.logs.map((entry) => entry.parameters.metallic)
+                },
+                convergence_reason: convergenceReason
             },
-            analysis: convergence,
-            convergence_detection: convergenceDetection,
+            analysis: {
+                ...convergence,
+                convergence_reason: convergenceReason
+            },
+            convergence_detection: {
+                ...convergenceDetection,
+                convergence_iteration: optimizerResult.convergence_iteration || convergenceDetection.convergence_iteration,
+                reason: convergenceReason
+            },
             metadata,
             material_profile: record.materialProfile,
             profile: {
-                total_render_calls: 1 + optimizerResult.logs.length * 6,
+                total_render_calls: optimizerResult.total_render_calls || (1 + optimizerResult.logs.length * 6),
                 total_time: optimizerResult.total_time_ms,
                 avg_time_per_iteration: metrics.avg_iteration_time
             },
-            status: metrics.status
+            status: metrics.status,
+            optimizer: {
+                type: 'adam_finite_difference',
+                beta1: config.adam_beta1 ?? 0.9,
+                beta2: config.adam_beta2 ?? 0.999,
+                epsilon: config.adam_epsilon ?? 1e-8,
+                stop_reason: convergenceReason
+            },
+            export_summary: {
+                json_schema_version: '2.0',
+                csv_columns: [
+                    'image_id',
+                    'method',
+                    'status',
+                    'final_loss',
+                    'initial_loss',
+                    'loss_drop_percentage',
+                    'iterations',
+                    'runtime_ms',
+                    'convergence_iteration',
+                    'convergence_reason',
+                    'gradient_final_norm',
+                    'final_albedo_r',
+                    'final_albedo_g',
+                    'final_albedo_b',
+                    'final_roughness',
+                    'final_metallic',
+                    'mse',
+                    'ssim',
+                    'sobel_edge_loss'
+                ]
+            }
         };
 
         if (record.reference) {
@@ -752,7 +802,10 @@ export class ExperimentRunner {
         if (!result) {
             throw new Error('No experiment results available for export');
         }
-        return this.exporter.exportExperimentResults(result, format);
+        if (format === 'csv') {
+            return this.buildCsvSummary(result);
+        }
+        return JSON.stringify(result, null, 2);
     }
 
     exportResults(result = this.lastResult) {
@@ -761,9 +814,62 @@ export class ExperimentRunner {
         }
 
         return {
-            json: this.exporter.exportExperimentResults(result, 'json'),
-            csv: this.exporter.exportResultsCsv([result])
+            json: JSON.stringify(result, null, 2),
+            csv: this.buildCsvSummary(result)
         };
+    }
+
+    buildCsvSummary(result) {
+        const metrics = result.metrics || {};
+        const params = result.final_parameters || {};
+        const albedo = Array.isArray(params.albedo) ? params.albedo : [null, null, null];
+        const headers = [
+            'image_id',
+            'method',
+            'status',
+            'final_loss',
+            'initial_loss',
+            'loss_drop_percentage',
+            'iterations',
+            'runtime_ms',
+            'convergence_iteration',
+            'convergence_reason',
+            'gradient_final_norm',
+            'final_albedo_r',
+            'final_albedo_g',
+            'final_albedo_b',
+            'final_roughness',
+            'final_metallic',
+            'mse',
+            'ssim',
+            'sobel_edge_loss'
+        ];
+        const values = [
+            result?.config?.image_id ?? '',
+            result?.config?.init_type ?? '',
+            result?.status ?? '',
+            metrics.final_loss ?? '',
+            metrics.initial_loss ?? '',
+            metrics.loss_drop_percentage ?? '',
+            metrics.total_iterations ?? '',
+            metrics.total_runtime_ms ?? '',
+            metrics.convergence_iteration ?? '',
+            metrics.convergence_reason ?? '',
+            metrics.gradient_final_norm ?? '',
+            albedo[0] ?? '',
+            albedo[1] ?? '',
+            albedo[2] ?? '',
+            params.roughness ?? '',
+            params.metallic ?? '',
+            metrics.mse ?? '',
+            metrics.ssim ?? '',
+            metrics.sobel_edge_loss ?? ''
+        ];
+
+        const escapeCsv = (value) => `"${String(value).replace(/"/g, '""')}"`;
+        const headerRow = headers.map(escapeCsv).join(',');
+        const valueRow = values.map(escapeCsv).join(',');
+        return `${headerRow}\n${valueRow}`;
     }
 
     createSeededRandom(seed) {

@@ -1,4 +1,4 @@
-import { computeGradientNorm, computePhotometricMetrics, sanitizeParameters } from './metrics.js?v=20260413b';
+import { computeGradientNorm, computePhotometricMetrics, sanitizeParameters } from './metrics.js?v=20260420a';
 
 function cloneParameters(parameters) {
     return {
@@ -8,34 +8,49 @@ function cloneParameters(parameters) {
     };
 }
 
-function parameterKeys(config = {}) {
-    const keys = [];
-
-    if (config.optimize_albedo === true) {
-        keys.push(
-            ['albedo', 0],
-            ['albedo', 1],
-            ['albedo', 2]
-        );
-    }
-
-    keys.push(
+function parameterKeys() {
+    return [
+        ['albedo', 0],
+        ['albedo', 1],
+        ['albedo', 2],
         ['roughness', null],
         ['metallic', null]
-    );
-
-    return keys;
+    ];
 }
 
-function shouldStopFromLogs(logs) {
-    if (logs.length < 8) {
-        return false;
+function getParameterValue(parameters, [key, componentIndex]) {
+    if (componentIndex == null) {
+        return parameters[key];
     }
+    return parameters[key][componentIndex];
+}
 
-    const recent = logs.slice(-8);
-    const stableLoss = recent.every((entry) => Math.abs(entry.delta_loss) <= 1e-5);
-    const smallGradient = recent.every((entry) => entry.gradient_norm <= 1e-3);
-    return stableLoss || smallGradient;
+function setParameterValue(parameters, [key, componentIndex], value) {
+    if (componentIndex == null) {
+        parameters[key] = value;
+        return;
+    }
+    parameters[key][componentIndex] = value;
+}
+
+function createZeroLike() {
+    return {
+        albedo: [0, 0, 0],
+        roughness: 0,
+        metallic: 0
+    };
+}
+
+function adaptiveFiniteDifferenceEpsilon(parameterValue) {
+    return Math.max(1e-4, Math.abs(parameterValue) * 0.02);
+}
+
+function adamCorrection(value, decay, step) {
+    const correction = 1 - Math.pow(decay, step);
+    if (correction <= 0) {
+        return value;
+    }
+    return value / correction;
 }
 
 export class FiniteDifferenceOptimizer {
@@ -56,53 +71,59 @@ export class FiniteDifferenceOptimizer {
         };
     }
 
-    async estimateGradient(parameters, baselineLoss, targetImage, config, evaluationOptions) {
-        const epsilon = config.epsilon;
-        const gradient = {
-            albedo: [0, 0, 0],
-            roughness: 0,
-            metallic: 0
-        };
+    async estimateGradient(parameters, baselineLoss, targetImage, _config, evaluationOptions) {
+        const gradient = createZeroLike();
+        const adaptiveEpsilons = createZeroLike();
 
         let renderTimeMs = 0;
 
-        for (const [key, componentIndex] of parameterKeys(config)) {
+        for (const parameterKey of parameterKeys()) {
             const perturbed = cloneParameters(parameters);
+            const parameterValue = getParameterValue(perturbed, parameterKey);
+            const epsilon = adaptiveFiniteDifferenceEpsilon(parameterValue);
+            setParameterValue(perturbed, parameterKey, parameterValue + epsilon);
 
-            if (componentIndex == null) {
-                perturbed[key] += epsilon;
-            } else {
-                perturbed[key][componentIndex] += epsilon;
-            }
-
-            const safeParameters = sanitizeParameters(perturbed, config.clamp_enabled);
+            const safeParameters = sanitizeParameters(perturbed, true);
             const evaluation = await this.evaluate(safeParameters, targetImage, evaluationOptions);
             renderTimeMs += evaluation.render_time_ms;
             const gradientValue = (evaluation.loss - baselineLoss) / epsilon;
 
-            if (componentIndex == null) {
-                gradient[key] = gradientValue;
-            } else {
-                gradient[key][componentIndex] = gradientValue;
-            }
+            setParameterValue(gradient, parameterKey, gradientValue);
+            setParameterValue(adaptiveEpsilons, parameterKey, epsilon);
         }
 
         return {
             gradient,
+            adaptiveEpsilons,
             renderTimeMs
         };
     }
 
-    applyGradientStep(parameters, gradient, config) {
+    applyAdamStep(parameters, gradient, adamState, config, step) {
+        const baseLearningRate = Math.max(1e-6, config.learning_rate ?? 0.03);
+        const beta1 = config.adam_beta1 ?? 0.9;
+        const beta2 = config.adam_beta2 ?? 0.999;
+        const eps = config.adam_epsilon ?? 1e-8;
         const next = cloneParameters(parameters);
 
-        if (config.optimize_albedo === true) {
-            next.albedo = next.albedo.map((value, index) => value - config.learning_rate * gradient.albedo[index]);
-        }
-        next.roughness -= config.learning_rate * gradient.roughness;
-        next.metallic -= config.learning_rate * gradient.metallic;
+        for (const key of parameterKeys()) {
+            const gradientValue = getParameterValue(gradient, key);
+            const previousM = getParameterValue(adamState.m, key);
+            const previousV = getParameterValue(adamState.v, key);
+            const m = beta1 * previousM + (1 - beta1) * gradientValue;
+            const v = beta2 * previousV + (1 - beta2) * gradientValue * gradientValue;
+            setParameterValue(adamState.m, key, m);
+            setParameterValue(adamState.v, key, v);
 
-        return sanitizeParameters(next, config.clamp_enabled);
+            const mHat = adamCorrection(m, beta1, step);
+            const vHat = adamCorrection(v, beta2, step);
+            const adaptiveRate = baseLearningRate / (Math.sqrt(vHat) + eps);
+            const currentValue = getParameterValue(next, key);
+            const updatedValue = currentValue - adaptiveRate * mHat;
+            setParameterValue(next, key, updatedValue);
+        }
+
+        return sanitizeParameters(next, config.clamp_enabled !== false);
     }
 
     async optimize({
@@ -116,49 +137,88 @@ export class FiniteDifferenceOptimizer {
         this.logger.reset();
 
         const totalStart = performance.now();
-        let currentParameters = sanitizeParameters(initialParameters, config.clamp_enabled);
+        let currentParameters = sanitizeParameters(initialParameters, config.clamp_enabled !== false);
         const initialEvaluation = await this.evaluate(currentParameters, targetImage, evaluationOptions);
         const initialLoss = initialEvaluation.loss;
         let currentLoss = initialLoss;
         let finalEvaluation = initialEvaluation;
+        let convergenceReason = 'max_iterations_reached';
+        let stagnationCounter = 0;
+        const gradientStopThreshold = 1e-4;
+        const minimumLossImprovement = 1e-6;
+        const stagnationLimit = 5;
+        let totalRenderCalls = 1;
+
+        const adamState = {
+            m: createZeroLike(),
+            v: createZeroLike()
+        };
 
         for (let iteration = 1; iteration <= config.max_iterations; iteration += 1) {
             if (shouldContinue && !shouldContinue()) {
+                convergenceReason = 'stopped_by_user';
                 break;
             }
 
-            const { gradient, renderTimeMs: gradientRenderTimeMs } = await this.estimateGradient(
+            const { gradient, adaptiveEpsilons, renderTimeMs: gradientRenderTimeMs } = await this.estimateGradient(
                 currentParameters,
                 currentLoss,
                 targetImage,
                 config,
                 evaluationOptions
             );
+            totalRenderCalls += parameterKeys().length;
+            const gradientNorm = computeGradientNorm(gradient);
 
-            const updatedParameters = this.applyGradientStep(currentParameters, gradient, config);
+            if (gradientNorm < gradientStopThreshold) {
+                const logEntry = this.logger.logIteration({
+                    iteration,
+                    loss: currentLoss,
+                    delta_loss: 0,
+                    parameters: currentParameters,
+                    gradient_norm: gradientNorm,
+                    render_time_ms: gradientRenderTimeMs,
+                    adaptive_epsilons: adaptiveEpsilons
+                });
+                if (onIteration) {
+                    onIteration(logEntry);
+                }
+                convergenceReason = 'gradient_norm_threshold';
+                break;
+            }
+
+            const updatedParameters = this.applyAdamStep(currentParameters, gradient, adamState, config, iteration);
             const updatedEvaluation = await this.evaluate(updatedParameters, targetImage, evaluationOptions);
+            totalRenderCalls += 1;
             const iterationRenderTime = gradientRenderTimeMs + updatedEvaluation.render_time_ms;
             const deltaLoss = currentLoss - updatedEvaluation.loss;
             currentParameters = updatedParameters;
             currentLoss = updatedEvaluation.loss;
             finalEvaluation = updatedEvaluation;
+            stagnationCounter = deltaLoss < minimumLossImprovement ? stagnationCounter + 1 : 0;
 
             const logEntry = this.logger.logIteration({
                 iteration,
                 loss: updatedEvaluation.loss,
                 delta_loss: deltaLoss,
                 parameters: currentParameters,
-                gradient_norm: computeGradientNorm(gradient),
-                render_time_ms: iterationRenderTime
+                gradient_norm: gradientNorm,
+                render_time_ms: iterationRenderTime,
+                adaptive_epsilons: adaptiveEpsilons
             });
 
             if (onIteration) {
                 onIteration(logEntry);
             }
 
-            if (shouldStopFromLogs(this.logger.getLogs())) {
+            if (stagnationCounter >= stagnationLimit) {
+                convergenceReason = 'loss_improvement_plateau';
                 break;
             }
+        }
+
+        if (this.logger.getLogs().length >= config.max_iterations && convergenceReason === 'max_iterations_reached') {
+            convergenceReason = 'max_iterations_reached';
         }
 
         return {
@@ -166,7 +226,10 @@ export class FiniteDifferenceOptimizer {
             final_parameters: currentParameters,
             logs: this.logger.getLogs(),
             total_time_ms: performance.now() - totalStart,
-            final_evaluation_metrics: finalEvaluation.metrics
+            final_evaluation_metrics: finalEvaluation.metrics,
+            convergence_reason: convergenceReason,
+            convergence_iteration: this.logger.getLogs().length > 0 ? this.logger.getLogs()[this.logger.getLogs().length - 1].iteration : null,
+            total_render_calls: totalRenderCalls
         };
     }
 }
