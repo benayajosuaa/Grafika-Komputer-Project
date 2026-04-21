@@ -1,24 +1,38 @@
 import { ExperimentLogger } from './experiment_logger.js?v=20260413b';
 import { ExperimentExporter } from './exporter.js?v=20260413b';
-import { aggregateBatchMetrics, analyzeConvergence, clamp01, computeFinalMetrics, detectConvergence, sanitizeParameters } from './metrics.js?v=20260420a';
-import { FiniteDifferenceOptimizer } from './optimizer.js?v=20260420a';
+import { aggregateBatchMetrics, analyzeConvergence, clamp01, computeFinalMetrics, detectConvergence, sanitizeParameters } from './metrics.js?v=20260421a';
+import { FiniteDifferenceOptimizer } from './optimizer.js?v=20260421a';
 import { SeededRNG, createSeededRandom } from './research_rng.js?v=20260413b';
 
 function cloneParameters(parameters) {
     return {
         albedo: [...parameters.albedo],
         roughness: parameters.roughness,
-        metallic: parameters.metallic
+        metallic: parameters.metallic,
+        anisotropy: parameters.anisotropy ?? 0
     };
 }
 
-function readImagePixels(imageData) {
+function srgbToLinear(value) {
+    if (value <= 0.04045) {
+        return value / 12.92;
+    }
+    return Math.pow((value + 0.055) / 1.055, 2.4);
+}
+
+function readImagePixels(imageData, colorSpace = 'linear') {
     const pixels = [];
     for (let index = 0; index < imageData.data.length; index += 4) {
+        const sr = imageData.data[index] / 255;
+        const sg = imageData.data[index + 1] / 255;
+        const sb = imageData.data[index + 2] / 255;
+        const r = colorSpace === 'linear' ? srgbToLinear(sr) : sr;
+        const g = colorSpace === 'linear' ? srgbToLinear(sg) : sg;
+        const b = colorSpace === 'linear' ? srgbToLinear(sb) : sb;
         pixels.push(
-            imageData.data[index] / 255,
-            imageData.data[index + 1] / 255,
-            imageData.data[index + 2] / 255
+            r,
+            g,
+            b
         );
     }
     return pixels;
@@ -33,6 +47,85 @@ function createCanvas(width, height) {
 
 function luminance(r, g, b) {
     return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function computeSobelStreakFeatures(imageData, width, height) {
+    if (width < 3 || height < 3) {
+        return {
+            anisotropyScore: 0,
+            horizontalStreakScore: 0,
+            directionalStreakDetected: false
+        };
+    }
+
+    const luminanceValues = new Float32Array(width * height);
+    for (let y = 0; y < height; y += 1) {
+        for (let x = 0; x < width; x += 1) {
+            const index = (y * width + x) * 4;
+            const r = imageData.data[index] / 255;
+            const g = imageData.data[index + 1] / 255;
+            const b = imageData.data[index + 2] / 255;
+            luminanceValues[y * width + x] = luminance(r, g, b);
+        }
+    }
+
+    const bins = new Float32Array(12);
+    let sumMagnitude = 0;
+    let weightedSin = 0;
+    let weightedCos = 0;
+    let verticalGradientEnergy = 0;
+    let horizontalGradientEnergy = 0;
+
+    for (let y = 1; y < height - 1; y += 1) {
+        for (let x = 1; x < width - 1; x += 1) {
+            const i00 = (y - 1) * width + (x - 1);
+            const i01 = (y - 1) * width + x;
+            const i02 = (y - 1) * width + (x + 1);
+            const i10 = y * width + (x - 1);
+            const i12 = y * width + (x + 1);
+            const i20 = (y + 1) * width + (x - 1);
+            const i21 = (y + 1) * width + x;
+            const i22 = (y + 1) * width + (x + 1);
+
+            const gx = (luminanceValues[i02] + 2 * luminanceValues[i12] + luminanceValues[i22])
+                - (luminanceValues[i00] + 2 * luminanceValues[i10] + luminanceValues[i20]);
+            const gy = (luminanceValues[i20] + 2 * luminanceValues[i21] + luminanceValues[i22])
+                - (luminanceValues[i00] + 2 * luminanceValues[i01] + luminanceValues[i02]);
+            const magnitude = Math.sqrt(gx * gx + gy * gy);
+            if (magnitude < 1e-5) {
+                continue;
+            }
+
+            const angle = Math.atan2(gy, gx);
+            const normalized = (angle + Math.PI) / (2 * Math.PI);
+            const bin = Math.min(bins.length - 1, Math.floor(normalized * bins.length));
+            bins[bin] += magnitude;
+            sumMagnitude += magnitude;
+            weightedSin += Math.sin(2 * angle) * magnitude;
+            weightedCos += Math.cos(2 * angle) * magnitude;
+            verticalGradientEnergy += Math.abs(gy);
+            horizontalGradientEnergy += Math.abs(gx);
+        }
+    }
+
+    if (sumMagnitude <= 1e-6) {
+        return {
+            anisotropyScore: 0,
+            horizontalStreakScore: 0,
+            directionalStreakDetected: false
+        };
+    }
+
+    const dominantBin = Math.max(...bins) / sumMagnitude;
+    const coherence = Math.sqrt(weightedSin * weightedSin + weightedCos * weightedCos) / sumMagnitude;
+    const anisotropyScore = clamp01(0.5 * dominantBin + 0.5 * coherence);
+    const horizontalStreakScore = clamp01(verticalGradientEnergy / Math.max(1e-6, verticalGradientEnergy + horizontalGradientEnergy));
+
+    return {
+        anisotropyScore,
+        horizontalStreakScore,
+        directionalStreakDetected: anisotropyScore > 0.34 && horizontalStreakScore > 0.54
+    };
 }
 
 function coverImageOnCanvas(context, image, width, height) {
@@ -191,9 +284,18 @@ function buildSeamlessTextureFromImage(image, outputSize = 256) {
 }
 
 function buildMaterialProfile(stats) {
-    const { saturation, highlightRatio, stdDev, neutralness, avgL, warmBias, coolBias } = stats;
+    const {
+        saturation,
+        highlightRatio,
+        stdDev,
+        neutralness,
+        warmBias,
+        detectedMetal,
+        directionalStreakDetected,
+        anisotropyScore
+    } = stats;
 
-    if (highlightRatio > 0.12 && neutralness > 0.62) {
+    if ((highlightRatio > 0.12 && neutralness > 0.62) || detectedMetal) {
         return {
             key: 'metal',
             label: 'Metallic / Reflective',
@@ -206,7 +308,8 @@ function buildMaterialProfile(stats) {
             specularBoost: 1.45,
             bumpIntensity: 0.035,
             sheenTint: [0.92, 0.96, 1.0],
-            grainDirection: [1.0, 0.08]
+            grainDirection: directionalStreakDetected ? [1.0, 0.0] : [1.0, 0.08],
+            anisotropyBias: directionalStreakDetected ? Math.max(0.35, anisotropyScore) : 0
         };
     }
 
@@ -340,12 +443,16 @@ export class ExperimentRunner {
         const image = await this.resolveImageSource(source);
         context.drawImage(image, 0, 0, this.imageSize, this.imageSize);
         const imageData = context.getImageData(0, 0, this.imageSize, this.imageSize);
+        const linearPixels = readImagePixels(imageData, 'linear');
+        const srgbPixels = readImagePixels(imageData, 'srgb');
 
         return {
             width: this.imageSize,
             height: this.imageSize,
             imageData,
-            pixels: readImagePixels(imageData)
+            pixels: linearPixels,
+            srgbPixels,
+            colorSpace: 'sRGB'
         };
     }
 
@@ -379,31 +486,28 @@ export class ExperimentRunner {
 
     computeHeuristicInitialization(imageRecord) {
         const stats = imageRecord.materialProfile?.stats || this.collectImageStats(imageRecord.target);
-        const pixels = imageRecord.target.imageData.data;
-        let sumR = 0;
-        let sumG = 0;
-        let sumB = 0;
-        const pixelCount = pixels.length / 4;
-
-        for (let index = 0; index < pixels.length; index += 4) {
-            const r = pixels[index] / 255;
-            const g = pixels[index + 1] / 255;
-            const b = pixels[index + 2] / 255;
-
-            sumR += r;
-            sumG += g;
-            sumB += b;
-        }
-
-        const avgR = sumR / pixelCount;
-        const avgG = sumG / pixelCount;
-        const avgB = sumB / pixelCount;
-        const { avgL, stdDev, saturation, neutralness, highlightRatio, contrastEnergy } = stats;
+        const isLowSaturationGray = stats.saturation < 0.08 && stats.neutralness > 0.9;
+        const luminanceInit = clamp01(stats.avgL);
+        const albedo = isLowSaturationGray
+            ? [luminanceInit, luminanceInit, luminanceInit]
+            : [clamp01(stats.avgR), clamp01(stats.avgG), clamp01(stats.avgB)];
+        const metallicFromHighlights = stats.highlightRatio > 0.11 && stats.neutralness > 0.68;
+        const detectedMetal = stats.detectedMetal === true;
+        const metallic = metallicFromHighlights || detectedMetal
+            ? 0.8
+            : clamp01(0.12 + stats.metalProbability * 0.65);
+        const roughness = detectedMetal
+            ? clamp01(0.24 + (1 - stats.highlightRatio) * 0.1)
+            : clamp01(0.3 + (1 - stats.highlightRatio) * 0.32);
+        const anisotropy = stats.directionalStreakDetected
+            ? clamp01(Math.max(0.35, stats.anisotropyScore))
+            : clamp01(stats.anisotropyScore * 0.35);
 
         return sanitizeParameters({
-            albedo: [avgR, avgG, avgB],
-            roughness: clamp01(0.26 + stdDev * 0.55 + contrastEnergy * 0.35 - highlightRatio * 0.24),
-            metallic: clamp01(0.06 + neutralness * 0.48 + highlightRatio * 0.78 - saturation * 0.62 - stdDev * 0.25)
+            albedo,
+            roughness,
+            metallic,
+            anisotropy
         });
     }
 
@@ -457,6 +561,16 @@ export class ExperimentRunner {
         const minRGB = Math.min(avgR, avgG, avgB);
         const saturation = maxRGB === 0 ? 0 : (maxRGB - minRGB) / maxRGB;
 
+        const streak = computeSobelStreakFeatures(targetImage.imageData, targetImage.width, targetImage.height);
+        const neutralness = 1 - saturation;
+        const metalProbability = clamp01(
+            highlightCount / pixelCount * 1.6
+            + neutralness * 0.55
+            + streak.anisotropyScore * 0.45
+            - saturation * 0.35
+        );
+        const detectedMetal = metalProbability >= 0.58 || (highlightCount / pixelCount > 0.11 && neutralness > 0.7);
+
         return {
             avgR,
             avgG,
@@ -464,11 +578,16 @@ export class ExperimentRunner {
             avgL,
             stdDev,
             saturation,
-            neutralness: 1 - saturation,
+            neutralness,
             highlightRatio: highlightCount / pixelCount,
             warmBias: avgR - avgB,
             coolBias: avgB - avgR,
-            contrastEnergy: clamp01(edgeEnergy / Math.max(1, targetImage.width * targetImage.height))
+            contrastEnergy: clamp01(edgeEnergy / Math.max(1, targetImage.width * targetImage.height)),
+            metalProbability,
+            detectedMetal,
+            anisotropyScore: streak.anisotropyScore,
+            horizontalStreakScore: streak.horizontalStreakScore,
+            directionalStreakDetected: streak.directionalStreakDetected
         };
     }
 
@@ -483,7 +602,12 @@ export class ExperimentRunner {
                 + (stats.contrastEnergy * 0.6)
                 + (stats.saturation * 0.4)
             ),
-            stats
+            stats,
+            detectedMetal: stats.detectedMetal,
+            metalProbability: stats.metalProbability,
+            anisotropyScore: stats.anisotropyScore,
+            directionalStreakDetected: stats.directionalStreakDetected,
+            dominantColor: [stats.avgR, stats.avgG, stats.avgB]
         };
     }
 
@@ -499,7 +623,8 @@ export class ExperimentRunner {
         return {
             albedo: [rng.next(), rng.next(), rng.next()],
             roughness: rng.range(0.05, 0.95),
-            metallic: rng.range(0, 1)
+            metallic: rng.range(0, 1),
+            anisotropy: rng.range(0, 1)
         };
     }
 
@@ -507,7 +632,8 @@ export class ExperimentRunner {
         return {
             albedo: [0.5, 0.5, 0.5],
             roughness: 0.5,
-            metallic: 0.0
+            metallic: 0.0,
+            anisotropy: 0
         };
     }
 
@@ -578,7 +704,8 @@ export class ExperimentRunner {
                     albedo_g: optimizerResult.logs.map((entry) => entry.parameters.albedo[1]),
                     albedo_b: optimizerResult.logs.map((entry) => entry.parameters.albedo[2]),
                     roughness: optimizerResult.logs.map((entry) => entry.parameters.roughness),
-                    metallic: optimizerResult.logs.map((entry) => entry.parameters.metallic)
+                    metallic: optimizerResult.logs.map((entry) => entry.parameters.metallic),
+                    anisotropy: optimizerResult.logs.map((entry) => entry.parameters.anisotropy ?? 0)
                 },
                 convergence_reason: convergenceReason
             },
@@ -594,7 +721,7 @@ export class ExperimentRunner {
             metadata,
             material_profile: record.materialProfile,
             profile: {
-                total_render_calls: optimizerResult.total_render_calls || (1 + optimizerResult.logs.length * 6),
+                total_render_calls: optimizerResult.total_render_calls || (1 + optimizerResult.logs.length * 7),
                 total_time: optimizerResult.total_time_ms,
                 avg_time_per_iteration: metrics.avg_iteration_time
             },
@@ -625,9 +752,13 @@ export class ExperimentRunner {
                     'final_albedo_b',
                     'final_roughness',
                     'final_metallic',
+                    'final_anisotropy',
                     'mse',
                     'ssim',
-                    'sobel_edge_loss'
+                    'sobel_edge_loss',
+                    'histogram_loss',
+                    'edge_direction_loss',
+                    'specular_prior_loss'
                 ]
             }
         };
@@ -649,12 +780,15 @@ export class ExperimentRunner {
         const evaluationOptions = {
             width: targetImage.width,
             height: targetImage.height,
-            lightingType: options.lightingType || 'default',
+            lightingType: 'default',
             referencePixels: record.reference ? record.reference.pixels : null,
             snapshotScale: 1.55,
             snapshotCameraZ: 2.1,
             showLightHelper: false,
-            transparentBackground: true
+            transparentBackground: true,
+            forceNeutralLighting: true,
+            disableToneMapping: true,
+            targetAnalysis: record.materialProfile?.stats || null
         };
 
         const optimizerResult = await this.optimizer.optimize({
@@ -840,9 +974,13 @@ export class ExperimentRunner {
             'final_albedo_b',
             'final_roughness',
             'final_metallic',
+            'final_anisotropy',
             'mse',
             'ssim',
-            'sobel_edge_loss'
+            'sobel_edge_loss',
+            'histogram_loss',
+            'edge_direction_loss',
+            'specular_prior_loss'
         ];
         const values = [
             result?.config?.image_id ?? '',
@@ -861,9 +999,13 @@ export class ExperimentRunner {
             albedo[2] ?? '',
             params.roughness ?? '',
             params.metallic ?? '',
+            params.anisotropy ?? '',
             metrics.mse ?? '',
             metrics.ssim ?? '',
-            metrics.sobel_edge_loss ?? ''
+            metrics.sobel_edge_loss ?? '',
+            metrics.histogram_loss ?? '',
+            metrics.edge_direction_loss ?? '',
+            metrics.specular_prior_loss ?? ''
         ];
 
         const escapeCsv = (value) => `"${String(value).replace(/"/g, '""')}"`;

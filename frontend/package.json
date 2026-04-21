@@ -1,1 +1,25 @@
-{\n  \"name\": \"brdf-estimation-frontend\",\n  \"version\": \"0.1.0\",\n  \"description\": \"Interactive web frontend for BRDF material estimation\",\n  \"main\": \"js/main.js\",\n  \"scripts\": {\n    \"dev\": \"python -m http.server 8000\",\n    \"build\": \"echo 'No build step required for static site'\",\n    \"serve\": \"python -m http.server 8000\",\n    \"test\": \"echo 'Frontend testing not configured'\"\n  },\n  \"keywords\": [\n    \"brdf\",\n    \"material\",\n    \"rendering\",\n    \"graphics\"\n  ],\n  \"author\": \"Benaya Josua\",\n  \"license\": \"MIT\",\n  \"dependencies\": {\n    \"three\": \"^r128\",\n    \"chart.js\": \"^3.9.1\"\n  },\n  \"devDependencies\": {}\n}\n
+{
+  "name": "brdf-estimation-frontend",
+  "version": "0.1.0",
+  "description": "Interactive web frontend for BRDF material estimation",
+  "main": "js/main.js",
+  "scripts": {
+    "dev": "python -m http.server 8000",
+    "build": "echo 'No build step required for static site'",
+    "serve": "python -m http.server 8000",
+    "test": "echo 'Frontend testing not configured'"
+  },
+  "keywords": [
+    "brdf",
+    "material",
+    "rendering",
+    "graphics"
+  ],
+  "author": "Benaya Josua",
+  "license": "MIT",
+  "dependencies": {
+    "three": "^r128",
+    "chart.js": "^3.9.1"
+  },
+  "devDependencies": {}
+}

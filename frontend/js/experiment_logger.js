@@ -15,7 +15,8 @@ export class ExperimentLogger {
             parameters: {
                 albedo: [...entry.parameters.albedo],
                 roughness: entry.parameters.roughness,
-                metallic: entry.parameters.metallic
+                metallic: entry.parameters.metallic,
+                anisotropy: entry.parameters.anisotropy ?? 0
             },
             gradient_norm: entry.gradient_norm,
             render_time_ms: entry.render_time_ms
@@ -31,7 +32,8 @@ export class ExperimentLogger {
             parameters: {
                 albedo: [...entry.parameters.albedo],
                 roughness: entry.parameters.roughness,
-                metallic: entry.parameters.metallic
+                metallic: entry.parameters.metallic,
+                anisotropy: entry.parameters.anisotropy ?? 0
             }
         }));
     }

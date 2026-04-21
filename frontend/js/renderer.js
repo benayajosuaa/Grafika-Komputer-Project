@@ -2,6 +2,13 @@ function clamp01(value) {
     return Math.max(0, Math.min(1, value));
 }
 
+function srgbToLinear(value) {
+    if (value <= 0.04045) {
+        return value / 12.92;
+    }
+    return Math.pow((value + 0.055) / 1.055, 2.4);
+}
+
 const RENDER_MODE = {
     lightingOnly: 0,
     textureOnly: 1,
@@ -103,6 +110,7 @@ const FRAGMENT_SHADER = `
     uniform float sheenStrength;
     uniform float specularBoost;
     uniform float bumpIntensity;
+    uniform float anisotropy;
     uniform float albedoInfluence;
     uniform vec3 sheenTint;
     uniform vec3 textureMean;
@@ -162,19 +170,6 @@ const FRAGMENT_SHADER = `
         return xSample * blending.x + ySample * blending.y + zSample * blending.z;
     }
 
-    vec3 acesTonemap(vec3 color) {
-        const float a = 2.51;
-        const float b = 0.03;
-        const float c = 2.43;
-        const float d = 0.59;
-        const float e = 0.14;
-        return clamp((color * (a * color + b)) / (color * (c * color + d) + e), 0.0, 1.0);
-    }
-
-    vec3 applyGamma(vec3 color) {
-        return pow(max(color, vec3(0.0)), vec3(1.0 / 2.2));
-    }
-
     void main() {
         vec3 localPosition = vLocalPosition * 0.85;
         vec2 baseUv = vUV * detailScale;
@@ -206,6 +201,8 @@ const FRAGMENT_SHADER = `
         vec3 l = normalize(lightPosition - vWorldPosition);
         vec3 v = normalize(cameraPosition - vWorldPosition);
         vec3 r = reflect(-l, n);
+        vec3 tangent = normalize(vec3(grainDirection.x, grainDirection.y, 0.0));
+        vec3 bitangent = normalize(cross(n, tangent));
         vec3 effectiveLightColor = lightColor * lightIntensity;
         vec3 h = normalize(l + v);
         float eta = max(1.0, ior);
@@ -216,6 +213,15 @@ const FRAGMENT_SHADER = `
         float specularTerm = 0.0;
         if (diffuseTerm > 0.0) {
             specularTerm = pow(max(dot(v, r), 0.0), shininess);
+            float nDotH = max(dot(n, h), 0.0);
+            float tDotH = dot(tangent, h);
+            float bDotH = dot(bitangent, h);
+            float anisoExponentX = mix(2.0, 22.0, anisotropy);
+            float anisoExponentY = mix(2.0, 5.0, anisotropy);
+            float anisotropicLobe = pow(max(1.0 - abs(tDotH), 0.0), anisoExponentX)
+                * pow(max(1.0 - abs(bDotH), 0.0), anisoExponentY)
+                * pow(nDotH, 0.45);
+            specularTerm = mix(specularTerm, anisotropicLobe, anisotropy);
         }
 
         vec3 texColor = sampleTriplanar(uTexture, localPosition, n, textureRepeat);
@@ -275,8 +281,7 @@ const FRAGMENT_SHADER = `
         float transmission = mix(1.0, 0.3, glassMode);
         vec3 glassColor = mix(finalColor * transmission, vec3(1.0) * effectiveLightColor * fresnel * 1.25, clamp(glassMode, 0.0, 1.0));
         float alpha = mix(1.0, opacity, glassMode);
-        vec3 mapped = acesTonemap(mix(finalColor, glassColor, glassMode));
-        vec3 outputColor = applyGamma(mapped);
+        vec3 outputColor = clamp(mix(finalColor, glassColor, glassMode), 0.0, 1.0);
         gl_FragColor = vec4(outputColor, alpha);
     }
 `;
@@ -349,6 +354,13 @@ export class ThreeJSRenderer {
         this.renderer.setSize(this.width, this.height);
         this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
         this.renderer.setClearColor(0x1a1a2e);
+        this.renderer.toneMapping = THREE.NoToneMapping;
+        if ('outputColorSpace' in this.renderer && THREE.SRGBColorSpace) {
+            this.renderer.outputColorSpace = THREE.SRGBColorSpace;
+        }
+        if ('outputEncoding' in this.renderer && THREE.sRGBEncoding) {
+            this.renderer.outputEncoding = THREE.sRGBEncoding;
+        }
         this.container.appendChild(this.renderer.domElement);
         this.canvas = this.renderer.domElement;
         this.canvas.style.touchAction = 'none';
@@ -417,6 +429,12 @@ export class ThreeJSRenderer {
         texture.wrapT = THREE.RepeatWrapping;
         texture.minFilter = THREE.LinearMipmapLinearFilter;
         texture.magFilter = THREE.LinearFilter;
+        if ('colorSpace' in texture && THREE.SRGBColorSpace) {
+            texture.colorSpace = THREE.SRGBColorSpace;
+        }
+        if ('encoding' in texture && THREE.sRGBEncoding) {
+            texture.encoding = THREE.sRGBEncoding;
+        }
         texture.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
         texture.needsUpdate = true;
         return texture;
@@ -448,13 +466,14 @@ export class ThreeJSRenderer {
             sheenStrength: { value: this.materialProfile.sheenStrength },
             specularBoost: { value: this.materialProfile.specularBoost },
             bumpIntensity: { value: this.materialProfile.bumpIntensity },
+            anisotropy: { value: 0.0 },
             albedoInfluence: { value: 0.58 },
             sheenTint: { value: new THREE.Color(...this.materialProfile.sheenTint) },
             textureMean: { value: new THREE.Color(0.65, 0.65, 0.65) },
             grainDirection: { value: new THREE.Vector2(...this.materialProfile.grainDirection) },
-            hemiSkyColor: { value: new THREE.Color(0.76, 0.82, 0.9) },
-            hemiGroundColor: { value: new THREE.Color(0.26, 0.24, 0.22) },
-            hemiIntensity: { value: 0.24 }
+            hemiSkyColor: { value: new THREE.Color(1.0, 1.0, 1.0) },
+            hemiGroundColor: { value: new THREE.Color(1.0, 1.0, 1.0) },
+            hemiIntensity: { value: 0.08 }
         };
 
         return new THREE.ShaderMaterial({
@@ -468,8 +487,10 @@ export class ThreeJSRenderer {
 
     createProxyMesh(mode) {
         if (mode === 'cube') {
-            const geometry = new THREE.BoxGeometry(1.6, 1.6, 1.6, 30, 30, 30);
-            return new THREE.Mesh(geometry, this.material);
+            const geometry = new THREE.PlaneGeometry(2.1, 2.1, 120, 120);
+            const mesh = new THREE.Mesh(geometry, this.material);
+            mesh.rotation.x = -0.25;
+            return mesh;
         }
 
         const geometry = new THREE.SphereGeometry(1, 96, 96);
@@ -480,9 +501,13 @@ export class ThreeJSRenderer {
         this.meshes.sphere = this.createProxyMesh('sphere');
         this.meshes.cube = this.createProxyMesh('cube');
 
+        this.meshes.sphere.rotation.x = -0.2;
+        this.meshes.sphere.rotation.y = 0.5;
+        this.meshes.cube.rotation.x = -0.05;
+        this.meshes.cube.rotation.y = 0.0;
+        this.meshes.cube.position.z = 0.0;
+
         Object.values(this.meshes).forEach((mesh) => {
-            mesh.rotation.x = -0.2;
-            mesh.rotation.y = 0.5;
             mesh.visible = false;
             this.scene.add(mesh);
         });
@@ -500,15 +525,22 @@ export class ThreeJSRenderer {
         });
         this.multiviewRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
         this.multiviewRenderer.setClearColor(0x101827);
+        this.multiviewRenderer.toneMapping = THREE.NoToneMapping;
+        if ('outputColorSpace' in this.multiviewRenderer && THREE.SRGBColorSpace) {
+            this.multiviewRenderer.outputColorSpace = THREE.SRGBColorSpace;
+        }
+        if ('outputEncoding' in this.multiviewRenderer && THREE.sRGBEncoding) {
+            this.multiviewRenderer.outputEncoding = THREE.sRGBEncoding;
+        }
         this.multiviewRenderer.setSize(this.multiviewWidth, this.multiviewHeight);
         this.multiviewContainer.appendChild(this.multiviewRenderer.domElement);
 
         this.multiviewMeshes.sphere = new THREE.Mesh(this.meshes.sphere.geometry, this.material);
         this.multiviewMeshes.cube = new THREE.Mesh(this.meshes.cube.geometry, this.material);
 
+        this.multiviewMeshes.sphere.rotation.copy(this.meshes.sphere.rotation);
+        this.multiviewMeshes.cube.rotation.copy(this.meshes.cube.rotation);
         Object.values(this.multiviewMeshes).forEach((mesh) => {
-            mesh.rotation.x = -0.2;
-            mesh.rotation.y = 0.5;
             mesh.visible = false;
             this.multiviewScene.add(mesh);
         });
@@ -600,6 +632,12 @@ export class ThreeJSRenderer {
             texture.wrapT = THREE.RepeatWrapping;
             texture.minFilter = THREE.LinearMipmapLinearFilter;
             texture.magFilter = THREE.LinearFilter;
+            if ('colorSpace' in texture && THREE.SRGBColorSpace) {
+                texture.colorSpace = THREE.SRGBColorSpace;
+            }
+            if ('encoding' in texture && THREE.sRGBEncoding) {
+                texture.encoding = THREE.sRGBEncoding;
+            }
             texture.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
             texture.needsUpdate = true;
             this.uniforms.uTexture.value = texture;
@@ -615,6 +653,12 @@ export class ThreeJSRenderer {
                     texture.wrapT = THREE.RepeatWrapping;
                     texture.minFilter = THREE.LinearMipmapLinearFilter;
                     texture.magFilter = THREE.LinearFilter;
+                    if ('colorSpace' in texture && THREE.SRGBColorSpace) {
+                        texture.colorSpace = THREE.SRGBColorSpace;
+                    }
+                    if ('encoding' in texture && THREE.sRGBEncoding) {
+                        texture.encoding = THREE.sRGBEncoding;
+                    }
                     texture.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
                     texture.needsUpdate = true;
                     this.uniforms.uTexture.value = texture;
@@ -644,6 +688,7 @@ export class ThreeJSRenderer {
         const [r, g, b] = params.albedo;
         const roughness = clamp01(params.roughness);
         const metallic = clamp01(params.metallic);
+        const anisotropy = clamp01(params.anisotropy ?? 0);
         const lightIntensity = Math.max(0.1, Math.min(5.0, params.lightIntensity ?? 1.0));
         const opacity = Math.max(0.0, Math.min(1.0, params.opacity ?? 1.0));
         const ior = Math.max(1.0, Math.min(2.5, params.ior ?? 1.5));
@@ -652,6 +697,7 @@ export class ThreeJSRenderer {
         this.uniforms.lightIntensity.value = lightIntensity;
         this.uniforms.opacity.value = opacity;
         this.uniforms.ior.value = ior;
+        this.uniforms.anisotropy.value = anisotropy;
         this.uniforms.glassMode.value = glassEnabled ? 1.0 : 0.0;
         this.uniforms.albedoInfluence.value = 0.45 + roughness * 0.2 + (1.0 - metallic) * 0.1;
 
@@ -838,18 +884,6 @@ export class ThreeJSRenderer {
             default: {
                 lightColor: 0xffffff,
                 lightPosition: [3, 4, 3]
-            },
-            warm: {
-                lightColor: 0xffe2b8,
-                lightPosition: [3, 4, 2]
-            },
-            cool: {
-                lightColor: 0xcfe8ff,
-                lightPosition: [2, 4, 3]
-            },
-            dim: {
-                lightColor: 0xd7dbe0,
-                lightPosition: [3, 3, 3]
             },
             bright: {
                 lightColor: 0xffffff,
@@ -1099,6 +1133,7 @@ export class ThreeJSRenderer {
         const previousLightColor = this.lightState.color.clone();
         const previousClearColor = this.renderer.getClearColor(new THREE.Color()).clone();
         const previousClearAlpha = this.renderer.getClearAlpha();
+        const previousToneMapping = this.renderer.toneMapping;
         const previousCameraZ = this.camera.position.z;
         const previousCameraAspect = this.camera.aspect;
         const snapshotGeometry = options.snapshotGeometry || (previousMode === 'compare' ? 'sphere' : previousMode);
@@ -1122,8 +1157,13 @@ export class ThreeJSRenderer {
             this.camera.updateProjectionMatrix();
         }
 
-        if (options.lightingType) {
+        if (options.forceNeutralLighting === true) {
+            this.setLightingVariation('default');
+        } else if (options.lightingType) {
             this.setLightingVariation(options.lightingType);
+        }
+        if (options.disableToneMapping === true) {
+            this.renderer.toneMapping = THREE.NoToneMapping;
         }
         if (options.renderMode) {
             this.setRenderMode(options.renderMode);
@@ -1137,9 +1177,9 @@ export class ThreeJSRenderer {
 
         for (let index = 0; index < pixelBuffer.length; index += 4) {
             const alpha = pixelBuffer[index + 3] / 255;
-            const r = pixelBuffer[index] / 255;
-            const g = pixelBuffer[index + 1] / 255;
-            const b = pixelBuffer[index + 2] / 255;
+            const r = srgbToLinear(pixelBuffer[index] / 255);
+            const g = srgbToLinear(pixelBuffer[index + 1] / 255);
+            const b = srgbToLinear(pixelBuffer[index + 2] / 255);
             const [baseR, baseG, baseB] = parameters.albedo;
             pixels.push(
                 alpha > 0.01 ? r : baseR,
@@ -1165,6 +1205,7 @@ export class ThreeJSRenderer {
         this.lightArrow.setDirection(previousLightPosition.clone().normalize());
         this.multiviewLightArrow.setDirection(previousLightPosition.clone().normalize());
         this.renderer.setClearColor(previousClearColor, previousClearAlpha);
+        this.renderer.toneMapping = previousToneMapping;
         this.camera.position.z = previousCameraZ;
         this.camera.aspect = previousCameraAspect;
         this.camera.updateProjectionMatrix();

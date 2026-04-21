@@ -54,7 +54,8 @@ export function sanitizeParameters(parameters, clampEnabled = true) {
     const next = {
         albedo: [...parameters.albedo],
         roughness: parameters.roughness,
-        metallic: parameters.metallic
+        metallic: parameters.metallic,
+        anisotropy: parameters.anisotropy ?? 0
     };
 
     if (!clampEnabled) {
@@ -64,6 +65,7 @@ export function sanitizeParameters(parameters, clampEnabled = true) {
     next.albedo = next.albedo.map((value) => clamp01(value));
     next.roughness = clamp01(next.roughness);
     next.metallic = clamp01(next.metallic);
+    next.anisotropy = clamp01(next.anisotropy);
     return next;
 }
 
@@ -71,7 +73,8 @@ export function computeGradientNorm(gradient) {
     const values = [
         ...gradient.albedo,
         gradient.roughness,
-        gradient.metallic
+        gradient.metallic,
+        gradient.anisotropy ?? 0
     ];
     return Math.sqrt(values.reduce((acc, value) => acc + value * value, 0));
 }
@@ -305,20 +308,165 @@ export function computeSobelEdgeLoss(renderedPixels, targetPixels) {
     return edgeDiffSum / edgeCount;
 }
 
-export function computePhotometricMetrics(renderedPixels, targetPixels, referencePixels = null) {
+function computeHistogramLoss(renderedPixels, targetPixels, bins = 32) {
+    const clampedBins = Math.max(8, Math.min(128, Math.floor(bins)));
+    const renderedHist = Array.from({ length: 3 }, () => new Float32Array(clampedBins));
+    const targetHist = Array.from({ length: 3 }, () => new Float32Array(clampedBins));
+    const sampleCount = Math.min(
+        Math.floor(renderedPixels.length / 3),
+        Math.floor(targetPixels.length / 3)
+    );
+
+    if (sampleCount === 0) {
+        return 0;
+    }
+
+    for (let index = 0; index < sampleCount; index += 1) {
+        for (let channel = 0; channel < 3; channel += 1) {
+            const renderedValue = clamp01(renderedPixels[index * 3 + channel]);
+            const targetValue = clamp01(targetPixels[index * 3 + channel]);
+            const renderedBin = Math.min(clampedBins - 1, Math.floor(renderedValue * clampedBins));
+            const targetBin = Math.min(clampedBins - 1, Math.floor(targetValue * clampedBins));
+            renderedHist[channel][renderedBin] += 1;
+            targetHist[channel][targetBin] += 1;
+        }
+    }
+
+    let loss = 0;
+    for (let channel = 0; channel < 3; channel += 1) {
+        for (let bin = 0; bin < clampedBins; bin += 1) {
+            const renderedProb = renderedHist[channel][bin] / sampleCount;
+            const targetProb = targetHist[channel][bin] / sampleCount;
+            loss += Math.abs(renderedProb - targetProb);
+        }
+    }
+
+    return loss / 3;
+}
+
+function computeEdgeDirectionLoss(renderedPixels, targetPixels) {
+    const sampleCount = Math.min(
+        Math.floor(renderedPixels.length / 3),
+        Math.floor(targetPixels.length / 3)
+    );
+    if (sampleCount === 0) {
+        return 0;
+    }
+
+    const { width, height } = inferImageShape(sampleCount);
+    if (width * height !== sampleCount || width < 3 || height < 3) {
+        return 0;
+    }
+
+    const renderedLum = extractLuminance(renderedPixels, sampleCount);
+    const targetLum = extractLuminance(targetPixels, sampleCount);
+    let weightedDirectionError = 0;
+    let weightSum = 0;
+
+    for (let py = 1; py < height - 1; py += 1) {
+        for (let px = 1; px < width - 1; px += 1) {
+            const i00 = (py - 1) * width + (px - 1);
+            const i01 = (py - 1) * width + px;
+            const i02 = (py - 1) * width + (px + 1);
+            const i10 = py * width + (px - 1);
+            const i12 = py * width + (px + 1);
+            const i20 = (py + 1) * width + (px - 1);
+            const i21 = (py + 1) * width + px;
+            const i22 = (py + 1) * width + (px + 1);
+
+            const rGx = (renderedLum[i02] + 2 * renderedLum[i12] + renderedLum[i22]) - (renderedLum[i00] + 2 * renderedLum[i10] + renderedLum[i20]);
+            const rGy = (renderedLum[i20] + 2 * renderedLum[i21] + renderedLum[i22]) - (renderedLum[i00] + 2 * renderedLum[i01] + renderedLum[i02]);
+            const tGx = (targetLum[i02] + 2 * targetLum[i12] + targetLum[i22]) - (targetLum[i00] + 2 * targetLum[i10] + targetLum[i20]);
+            const tGy = (targetLum[i20] + 2 * targetLum[i21] + targetLum[i22]) - (targetLum[i00] + 2 * targetLum[i01] + targetLum[i02]);
+
+            const targetMagnitude = Math.sqrt(tGx * tGx + tGy * tGy);
+            if (targetMagnitude < 1e-4) {
+                continue;
+            }
+
+            const renderedMagnitude = Math.sqrt(rGx * rGx + rGy * rGy);
+            const dot = rGx * tGx + rGy * tGy;
+            const cosine = dot / Math.max(1e-6, renderedMagnitude * targetMagnitude);
+            const directionError = 1 - Math.max(-1, Math.min(1, cosine));
+            weightedDirectionError += directionError * targetMagnitude;
+            weightSum += targetMagnitude;
+        }
+    }
+
+    if (weightSum <= 1e-6) {
+        return 0;
+    }
+
+    return weightedDirectionError / weightSum;
+}
+
+function computeHighlightRatio(pixels, threshold = 0.72) {
+    const sampleCount = Math.floor(pixels.length / 3);
+    if (sampleCount === 0) {
+        return 0;
+    }
+
+    let highlights = 0;
+    for (let index = 0; index < sampleCount; index += 1) {
+        const r = pixels[index * 3];
+        const g = pixels[index * 3 + 1];
+        const b = pixels[index * 3 + 2];
+        const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        if (lum >= threshold) {
+            highlights += 1;
+        }
+    }
+
+    return highlights / sampleCount;
+}
+
+function computeSpecularPriorLoss(renderedPixels, targetPixels, options = {}) {
+    const parameters = options.parameters || {};
+    const analysis = options.targetAnalysis || {};
+    const targetHighlightRatio = computeHighlightRatio(targetPixels, 0.72);
+    const renderedHighlightRatio = computeHighlightRatio(renderedPixels, 0.72);
+    const targetSaturation = clamp01(analysis.saturation ?? 0.5);
+    const targetMetalProbability = clamp01(
+        analysis.metalProbability
+        ?? (targetHighlightRatio * 1.9 + (1 - targetSaturation) * 0.55)
+    );
+    const metalLike = targetMetalProbability >= 0.55;
+    const desiredMetallic = metalLike ? 0.85 : 0.18;
+    const desiredRoughness = metalLike ? 0.3 : 0.5;
+    const desiredAnisotropy = analysis.directionalStreakDetected ? clamp01(Math.max(0.35, analysis.anisotropyScore ?? 0)) : 0;
+    const metallicError = Math.abs((parameters.metallic ?? 0) - desiredMetallic);
+    const roughnessError = Math.abs((parameters.roughness ?? 0.5) - desiredRoughness);
+    const anisotropyError = Math.abs((parameters.anisotropy ?? 0) - desiredAnisotropy);
+    const highlightError = Math.abs(renderedHighlightRatio - targetHighlightRatio);
+    return (
+        0.45 * metallicError
+        + 0.2 * roughnessError
+        + 0.15 * anisotropyError
+        + 0.2 * highlightError
+    );
+}
+
+export function computePhotometricMetrics(renderedPixels, targetPixels, options = {}) {
+    const referencePixels = options.referencePixels || null;
     const mse = computeMSE(renderedPixels, targetPixels);
     const ssimRaw = computeSSIM(renderedPixels, targetPixels);
     const ssim = ssimRaw == null ? 0 : Math.max(-1, Math.min(1, ssimRaw));
     const ssimLoss = 1 - ssim;
     const sobelEdgeLoss = computeSobelEdgeLoss(renderedPixels, targetPixels);
-    const totalLoss = (0.6 * mse) + (0.3 * ssimLoss) + (0.1 * sobelEdgeLoss);
+    const histogramLoss = computeHistogramLoss(renderedPixels, targetPixels, options.histogramBins || 32);
+    const edgeDirectionLoss = computeEdgeDirectionLoss(renderedPixels, targetPixels);
+    const specularPriorLoss = computeSpecularPriorLoss(renderedPixels, targetPixels, options);
+    const totalLoss = (0.4 * mse) + (0.3 * histogramLoss) + (0.2 * edgeDirectionLoss) + (0.1 * specularPriorLoss);
 
     const metrics = {
         photometric_loss: totalLoss,
         mse,
         ssim,
         ssim_loss: ssimLoss,
-        sobel_edge_loss: sobelEdgeLoss
+        sobel_edge_loss: sobelEdgeLoss,
+        histogram_loss: histogramLoss,
+        edge_direction_loss: edgeDirectionLoss,
+        specular_prior_loss: specularPriorLoss
     };
 
     metrics.rmse = computeRMSE(renderedPixels, targetPixels);
@@ -439,7 +587,8 @@ export function detectFailure(logs, parameters) {
     const invalidParameter = [
         ...parameters.albedo,
         parameters.roughness,
-        parameters.metallic
+        parameters.metallic,
+        parameters.anisotropy ?? 0
     ].some((value) => !Number.isFinite(value) || value < 0 || value > 1);
 
     if (invalidParameter) {
@@ -485,6 +634,9 @@ export function computeFinalMetrics({
         ssim: finalEvaluationMetrics ? finalEvaluationMetrics.ssim : null,
         mse: finalEvaluationMetrics ? finalEvaluationMetrics.mse : null,
         sobel_edge_loss: finalEvaluationMetrics ? finalEvaluationMetrics.sobel_edge_loss : null,
+        histogram_loss: finalEvaluationMetrics ? finalEvaluationMetrics.histogram_loss : null,
+        edge_direction_loss: finalEvaluationMetrics ? finalEvaluationMetrics.edge_direction_loss : null,
+        specular_prior_loss: finalEvaluationMetrics ? finalEvaluationMetrics.specular_prior_loss : null,
         failure,
         convergence: convergenceAnalysis,
         status: failure.failed ? 'failed' : 'success'

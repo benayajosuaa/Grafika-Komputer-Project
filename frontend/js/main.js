@@ -1,6 +1,6 @@
-import { runExampleAblation, runExampleExperiment } from './example_experiments.js?v=20260413b';
-import { ExperimentRunner } from './experiment_runner.js?v=20260413b';
-import { ThreeJSRenderer } from './renderer.js?v=20260413b';
+import { runExampleAblation, runExampleExperiment } from './example_experiments.js?v=20260421a';
+import { ExperimentRunner } from './experiment_runner.js?v=20260421a';
+import { ThreeJSRenderer } from './renderer.js?v=20260421a';
 
 function createFallbackMaterialProfile() {
     return {
@@ -25,7 +25,7 @@ function createTexturePresets() {
     const presets = {
         'red-ceramic': {
             label: 'Red Ceramic',
-            parameters: { albedo: [0.76, 0.23, 0.18], roughness: 0.42, metallic: 0.05 },
+            parameters: { albedo: [0.76, 0.23, 0.18], roughness: 0.42, metallic: 0.05, anisotropy: 0.02 },
             draw: (context, size) => {
                 context.fillStyle = '#efe7df';
                 context.fillRect(0, 0, size, size);
@@ -40,7 +40,7 @@ function createTexturePresets() {
         },
         'blue-plastic': {
             label: 'Blue Plastic',
-            parameters: { albedo: [0.18, 0.45, 0.86], roughness: 0.28, metallic: 0.08 },
+            parameters: { albedo: [0.18, 0.45, 0.86], roughness: 0.28, metallic: 0.08, anisotropy: 0.0 },
             draw: (context, size) => {
                 const gradient = context.createLinearGradient(0, 0, size, size);
                 gradient.addColorStop(0, '#4ea0ff');
@@ -59,7 +59,7 @@ function createTexturePresets() {
         },
         'green-fabric': {
             label: 'Green Fabric',
-            parameters: { albedo: [0.24, 0.63, 0.33], roughness: 0.74, metallic: 0.02 },
+            parameters: { albedo: [0.24, 0.63, 0.33], roughness: 0.74, metallic: 0.02, anisotropy: 0.0 },
             draw: (context, size) => {
                 context.fillStyle = '#2e7d44';
                 context.fillRect(0, 0, size, size);
@@ -80,7 +80,7 @@ function createTexturePresets() {
         },
         'gold-metal': {
             label: 'Gold Metal',
-            parameters: { albedo: [0.88, 0.71, 0.21], roughness: 0.14, metallic: 0.96 },
+            parameters: { albedo: [0.88, 0.71, 0.21], roughness: 0.14, metallic: 0.96, anisotropy: 0.38 },
             draw: (context, size) => {
                 const gradient = context.createLinearGradient(0, 0, size, size);
                 gradient.addColorStop(0, '#fff2a8');
@@ -100,7 +100,7 @@ function createTexturePresets() {
         },
         'white-marble': {
             label: 'White Marble',
-            parameters: { albedo: [0.94, 0.94, 0.95], roughness: 0.36, metallic: 0.01 },
+            parameters: { albedo: [0.94, 0.94, 0.95], roughness: 0.36, metallic: 0.01, anisotropy: 0.0 },
             draw: (context, size) => {
                 context.fillStyle = '#f4f5f7';
                 context.fillRect(0, 0, size, size);
@@ -121,7 +121,7 @@ function createTexturePresets() {
         },
         'dark-leather': {
             label: 'Dark Leather',
-            parameters: { albedo: [0.22, 0.14, 0.1], roughness: 0.68, metallic: 0.0 },
+            parameters: { albedo: [0.22, 0.14, 0.1], roughness: 0.68, metallic: 0.0, anisotropy: 0.0 },
             draw: (context, size) => {
                 const gradient = context.createLinearGradient(0, 0, 0, size);
                 gradient.addColorStop(0, '#4a2e23');
@@ -172,6 +172,7 @@ class BRDFApp {
             albedo: [0.5, 0.5, 0.5],
             roughness: 0.5,
             metallic: 0.0,
+            anisotropy: 0.0,
             lightIntensity: 1.0,
             opacity: 1.0,
             ior: 1.5,
@@ -205,6 +206,7 @@ class BRDFApp {
         this.updateMaterialProfileDisplay();
         this.setMaterialMode(this.parameters.materialMode);
         this.updatePreview();
+        this.updateDebugPanel();
         this.exposeResearchApi();
     }
 
@@ -273,6 +275,15 @@ class BRDFApp {
         if (metallicElement) {
             metallicElement.addEventListener('input', (event) => {
                 this.parameters.metallic = parseInt(event.target.value, 10) / 100;
+                this.updateParameterDisplay();
+                this.updatePreview();
+            });
+        }
+
+        const anisotropyElement = document.getElementById('anisotropy');
+        if (anisotropyElement) {
+            anisotropyElement.addEventListener('input', (event) => {
+                this.parameters.anisotropy = parseInt(event.target.value, 10) / 100;
                 this.updateParameterDisplay();
                 this.updatePreview();
             });
@@ -541,12 +552,14 @@ class BRDFApp {
             ...this.parameters,
             albedo: [...heuristicParameters.albedo],
             roughness: heuristicParameters.roughness,
-            metallic: heuristicParameters.metallic
+            metallic: heuristicParameters.metallic,
+            anisotropy: heuristicParameters.anisotropy ?? 0
         };
 
         this.syncSlidersToParameters();
         this.updateParameterDisplay();
         this.updatePreview();
+        this.updateDebugPanel();
         this.showMessage(`Image registered as ${this.currentImageId}`);
     }
 
@@ -558,6 +571,9 @@ class BRDFApp {
 
         if (this.renderer) {
             this.renderer.setMaterialProfile(this.currentMaterialProfile);
+            if (this.currentMaterialProfile.anisotropyBias != null) {
+                this.parameters.anisotropy = Math.max(this.parameters.anisotropy ?? 0, this.currentMaterialProfile.anisotropyBias);
+            }
             this.renderer.updateMaterial(this.parameters);
         }
 
@@ -591,6 +607,7 @@ class BRDFApp {
         });
 
         this.updatePreview();
+        this.updateDebugPanel();
     }
 
     async applyTexturePreset(presetKey) {
@@ -604,7 +621,8 @@ class BRDFApp {
             ...this.parameters,
             albedo: [...preset.parameters.albedo],
             roughness: preset.parameters.roughness,
-            metallic: preset.parameters.metallic
+            metallic: preset.parameters.metallic,
+            anisotropy: preset.parameters.anisotropy ?? 0
         };
 
         const textureCanvas = preset.createCanvas();
@@ -643,6 +661,29 @@ class BRDFApp {
         }
     }
 
+    updateDebugPanel() {
+        const stats = this.currentMaterialProfile?.stats || {};
+        const dominantColor = this.currentMaterialProfile?.dominantColor || [stats.avgR ?? 0.5, stats.avgG ?? 0.5, stats.avgB ?? 0.5];
+        const setText = (id, value) => {
+            const element = document.getElementById(id);
+            if (element) {
+                element.textContent = value;
+            }
+        };
+
+        setText(
+            'debug-dominant-color',
+            `rgb(${Math.round((dominantColor[0] ?? 0.5) * 255)}, ${Math.round((dominantColor[1] ?? 0.5) * 255)}, ${Math.round((dominantColor[2] ?? 0.5) * 255)})`
+        );
+        setText('debug-saturation', (stats.saturation ?? 0).toFixed(3));
+        setText('debug-metal-probability', (stats.metalProbability ?? 0).toFixed(3));
+        setText('debug-anisotropy-score', (stats.anisotropyScore ?? 0).toFixed(3));
+        setText(
+            'debug-final-params',
+            `albedo=[${this.parameters.albedo.map((value) => value.toFixed(3)).join(', ')}], metallic=${this.parameters.metallic.toFixed(3)}, roughness=${this.parameters.roughness.toFixed(3)}, anisotropy=${(this.parameters.anisotropy ?? 0).toFixed(3)}`
+        );
+    }
+
     syncSlidersToParameters() {
         const sliderMap = {
             'albedo-r': Math.round(this.parameters.albedo[0] * 100),
@@ -650,6 +691,7 @@ class BRDFApp {
             'albedo-b': Math.round(this.parameters.albedo[2] * 100),
             roughness: Math.round(this.parameters.roughness * 100),
             metallic: Math.round(this.parameters.metallic * 100),
+            anisotropy: Math.round((this.parameters.anisotropy ?? 0) * 100),
             'light-intensity': (this.parameters.lightIntensity || 1.0).toFixed(1),
             opacity: (this.parameters.opacity ?? 1.0).toFixed(2),
             ior: (this.parameters.ior ?? 1.5).toFixed(2)
@@ -676,6 +718,7 @@ class BRDFApp {
         updateElement('albedo-b-val', this.parameters.albedo[2].toFixed(2));
         updateElement('roughness-val', this.parameters.roughness.toFixed(2));
         updateElement('metallic-val', this.parameters.metallic.toFixed(2));
+        updateElement('anisotropy-val', (this.parameters.anisotropy ?? 0).toFixed(2));
         updateElement('light-intensity-val', (this.parameters.lightIntensity || 1.0).toFixed(2));
         updateElement('opacity-val', (this.parameters.opacity ?? 1.0).toFixed(2));
         updateElement('ior-val', (this.parameters.ior ?? 1.5).toFixed(2));
@@ -695,6 +738,7 @@ class BRDFApp {
         this.renderer.updateMaterial(this.parameters);
         this.renderer.renderFrame();
         this.syncRenderedImagePreview();
+        this.updateDebugPanel();
     }
 
     toggleMultiview() {
@@ -725,9 +769,9 @@ class BRDFApp {
         const modeLabel = document.getElementById('geometry-mode-label');
         if (modeLabel) {
             modeLabel.textContent = mode === 'compare'
-                ? 'Compare Mode (Sphere vs Cube)'
+                ? 'Compare Mode (Sphere vs Flat Plane)'
                 : mode === 'cube'
-                    ? 'Cube'
+                    ? 'Flat Plane'
                     : 'Sphere';
         }
 
@@ -785,6 +829,24 @@ class BRDFApp {
         }
 
         renderedImage.src = this.renderer.canvas.toDataURL('image/png');
+        const sphereImage = document.getElementById('rendered-sphere-image');
+        const planeImage = document.getElementById('rendered-plane-image');
+        const previousMode = this.renderer.currentGeometryMode;
+
+        this.renderer.setGeometryMode('sphere');
+        this.renderer.renderFrame();
+        if (sphereImage) {
+            sphereImage.src = this.renderer.canvas.toDataURL('image/png');
+        }
+
+        this.renderer.setGeometryMode('cube');
+        this.renderer.renderFrame();
+        if (planeImage) {
+            planeImage.src = this.renderer.canvas.toDataURL('image/png');
+        }
+
+        this.renderer.setGeometryMode(previousMode);
+        this.renderer.renderFrame();
     }
 
     buildExperimentConfig(initType = 'heuristic') {
@@ -795,7 +857,7 @@ class BRDFApp {
             learning_rate: 0.05,
             epsilon: 0.01,
             clamp_enabled: true,
-            optimize_albedo: false,
+            optimize_albedo: true,
             seed: 7
         };
     }
@@ -828,7 +890,8 @@ class BRDFApp {
                         ...this.parameters,
                         albedo: [...logEntry.parameters.albedo],
                         roughness: logEntry.parameters.roughness,
-                        metallic: logEntry.parameters.metallic
+                        metallic: logEntry.parameters.metallic,
+                        anisotropy: logEntry.parameters.anisotropy ?? 0
                     };
                     this.lossHistory.push(logEntry.loss);
                     this.gradientHistory.push(logEntry.gradient_norm);
@@ -842,6 +905,7 @@ class BRDFApp {
                         logEntry.loss,
                         (performance.now() - startedAt) / 1000
                     );
+                    this.updateDebugPanel();
                 },
                 shouldContinue: () => this.isOptimizing
             });
@@ -851,7 +915,8 @@ class BRDFApp {
                 ...this.parameters,
                 albedo: [...result.final_parameters.albedo],
                 roughness: result.final_parameters.roughness,
-                metallic: result.final_parameters.metallic
+                metallic: result.final_parameters.metallic,
+                anisotropy: result.final_parameters.anisotropy ?? 0
             };
             this.lossHistory = result.convergence_curve.loss_vs_iteration;
             this.gradientHistory = result.convergence_curve.gradient_norm_vs_iteration;
@@ -860,6 +925,7 @@ class BRDFApp {
             this.updateSummaryMetricsPanel(result.metrics);
             this.syncSlidersToParameters();
             this.syncRenderedImagePreview();
+            this.updateDebugPanel();
 
             await this.runAblationAndDisplay(this.currentImageId, this.buildExperimentConfig('heuristic'));
             this.showMessage(`Experiment complete. Final loss: ${result.metrics.final_loss.toFixed(6)}`);
@@ -902,6 +968,7 @@ class BRDFApp {
             albedo: [0.5, 0.5, 0.5],
             roughness: 0.5,
             metallic: 0.0,
+            anisotropy: 0.0,
             lightIntensity: 1.0,
             opacity: 1.0,
             ior: 1.5,
@@ -932,6 +999,7 @@ class BRDFApp {
         this.updateSummaryMetricsPanel(null);
         this.updateAblationPanel(null);
         this.updateOptimizationStatus(0, 0, null, 0);
+        this.updateDebugPanel();
     }
 
     updateProgressBar(current, total, loss) {

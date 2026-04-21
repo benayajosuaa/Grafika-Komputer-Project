@@ -80,6 +80,12 @@
                     </div>
 
                     <div class="parameter-control">
+                        <label>Anisotropy (Optional)</label>
+                        <input type="range" id="anisotropy" min="0" max="100" value="0">
+                        <span id="anisotropy-val">0.00</span>
+                    </div>
+
+                    <div class="parameter-control">
                         <label>Light Intensity</label>
                         <input type="range" id="light-intensity" min="0.1" max="5.0" step="0.1" value="1.0">
                         <span id="light-intensity-val">1.00</span>
@@ -132,8 +138,8 @@
                     <h3>Proxy Geometry</h3>
                     <div class="geometry-toggle">
                         <button id="geometry-sphere" class="btn btn-primary geometry-btn is-active">Sphere</button>
-                        <button id="geometry-cube" class="btn btn-secondary geometry-btn">Cube</button>
-                        <button id="geometry-compare" class="btn btn-secondary geometry-btn geometry-btn-wide">Compare Mode</button>
+                        <button id="geometry-cube" class="btn btn-secondary geometry-btn">Flat Plane</button>
+                        <button id="geometry-compare" class="btn btn-secondary geometry-btn geometry-btn-wide">Side-by-Side Compare</button>
                         <button id="toggle-multiview" class="btn btn-secondary geometry-btn geometry-btn-wide">Multiview</button>
                     </div>
                 </div>
@@ -198,12 +204,12 @@
                         </table>
                     </div>
                     <div class="compare-stat-card" id="specular-card-cube">
-                        <h3>Cube Highlight</h3>
+                        <h3>Flat Plane Highlight</h3>
                         <table class="specular-table">
                             <tbody>
                                 <tr>
                                     <th>Geometry</th>
-                                    <td>Cube</td>
+                                    <td>Flat Plane</td>
                                 </tr>
                                 <tr>
                                     <th>`dot(N,H)^shininess`</th>
@@ -358,8 +364,40 @@
                         </div>
                         <div class="comparison-item">
                             <img id="rendered-image" src="" alt="Rendered">
-                            <p>Estimated Render</p>
+                            <p>Current View Render</p>
                         </div>
+                        <div class="comparison-item">
+                            <img id="rendered-plane-image" src="" alt="Flat plane render">
+                            <p>Flat Plane Render</p>
+                        </div>
+                        <div class="comparison-item">
+                            <img id="rendered-sphere-image" src="" alt="Sphere render">
+                            <p>Sphere Render</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="metrics-section">
+                    <h3>Debug Panel</h3>
+                    <div class="metric-item">
+                        <span>Dominant color:</span>
+                        <span id="debug-dominant-color" class="metric-value">--</span>
+                    </div>
+                    <div class="metric-item">
+                        <span>Saturation:</span>
+                        <span id="debug-saturation" class="metric-value">--</span>
+                    </div>
+                    <div class="metric-item">
+                        <span>Metal probability:</span>
+                        <span id="debug-metal-probability" class="metric-value">--</span>
+                    </div>
+                    <div class="metric-item">
+                        <span>Anisotropy score:</span>
+                        <span id="debug-anisotropy-score" class="metric-value">--</span>
+                    </div>
+                    <div class="metric-item">
+                        <span>Final parameters:</span>
+                        <span id="debug-final-params" class="metric-value">--</span>
                     </div>
                 </div>
 
@@ -412,7 +450,7 @@
     </div>
 
     <!-- Scripts -->
-    <script type="module" src="js/main.js?v=20260413b"></script>
+    <script type="module" src="js/main.js?v=20260421a"></script>
     <script src="js/popout.js"></script>
     
     <!-- DIRECT INFO BUTTON HANDLER -->

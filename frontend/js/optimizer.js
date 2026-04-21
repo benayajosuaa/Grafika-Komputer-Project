@@ -1,10 +1,11 @@
-import { computeGradientNorm, computePhotometricMetrics, sanitizeParameters } from './metrics.js?v=20260420a';
+import { computeGradientNorm, computePhotometricMetrics, sanitizeParameters } from './metrics.js?v=20260421a';
 
 function cloneParameters(parameters) {
     return {
         albedo: [...parameters.albedo],
         roughness: parameters.roughness,
-        metallic: parameters.metallic
+        metallic: parameters.metallic,
+        anisotropy: parameters.anisotropy ?? 0
     };
 }
 
@@ -14,7 +15,8 @@ function parameterKeys() {
         ['albedo', 1],
         ['albedo', 2],
         ['roughness', null],
-        ['metallic', null]
+        ['metallic', null],
+        ['anisotropy', null]
     ];
 }
 
@@ -37,7 +39,8 @@ function createZeroLike() {
     return {
         albedo: [0, 0, 0],
         roughness: 0,
-        metallic: 0
+        metallic: 0,
+        anisotropy: 0
     };
 }
 
@@ -59,9 +62,29 @@ export class FiniteDifferenceOptimizer {
         this.logger = logger;
     }
 
+    applyPhysicalConstraints(parameters, evaluationOptions = {}) {
+        const constrained = cloneParameters(parameters);
+        const targetAnalysis = evaluationOptions.targetAnalysis || {};
+        const detectedMetal = targetAnalysis.detectedMetal === true || targetAnalysis.metalProbability >= 0.6;
+
+        if (detectedMetal) {
+            constrained.metallic = Math.max(0.7, Math.min(1.0, constrained.metallic));
+            constrained.roughness = Math.max(0.15, Math.min(0.45, constrained.roughness));
+            if (targetAnalysis.directionalStreakDetected) {
+                constrained.anisotropy = Math.max(0.35, constrained.anisotropy);
+            }
+        }
+
+        return sanitizeParameters(constrained, true);
+    }
+
     async evaluate(parameters, targetImage, evaluationOptions = {}) {
         const snapshot = await this.renderer.renderSnapshot(parameters, evaluationOptions);
-        const metrics = computePhotometricMetrics(snapshot.pixels, targetImage.pixels, evaluationOptions.referencePixels || null);
+        const metrics = computePhotometricMetrics(snapshot.pixels, targetImage.pixels, {
+            referencePixels: evaluationOptions.referencePixels || null,
+            parameters,
+            targetAnalysis: evaluationOptions.targetAnalysis || null
+        });
 
         return {
             loss: metrics.photometric_loss,
@@ -83,7 +106,7 @@ export class FiniteDifferenceOptimizer {
             const epsilon = adaptiveFiniteDifferenceEpsilon(parameterValue);
             setParameterValue(perturbed, parameterKey, parameterValue + epsilon);
 
-            const safeParameters = sanitizeParameters(perturbed, true);
+            const safeParameters = this.applyPhysicalConstraints(perturbed, evaluationOptions);
             const evaluation = await this.evaluate(safeParameters, targetImage, evaluationOptions);
             renderTimeMs += evaluation.render_time_ms;
             const gradientValue = (evaluation.loss - baselineLoss) / epsilon;
@@ -123,7 +146,8 @@ export class FiniteDifferenceOptimizer {
             setParameterValue(next, key, updatedValue);
         }
 
-        return sanitizeParameters(next, config.clamp_enabled !== false);
+        const sanitized = sanitizeParameters(next, config.clamp_enabled !== false);
+        return this.applyPhysicalConstraints(sanitized, config.evaluation_options || {});
     }
 
     async optimize({
@@ -137,7 +161,11 @@ export class FiniteDifferenceOptimizer {
         this.logger.reset();
 
         const totalStart = performance.now();
-        let currentParameters = sanitizeParameters(initialParameters, config.clamp_enabled !== false);
+        config.evaluation_options = evaluationOptions;
+        let currentParameters = this.applyPhysicalConstraints(
+            sanitizeParameters(initialParameters, config.clamp_enabled !== false),
+            evaluationOptions
+        );
         const initialEvaluation = await this.evaluate(currentParameters, targetImage, evaluationOptions);
         const initialLoss = initialEvaluation.loss;
         let currentLoss = initialLoss;
@@ -187,7 +215,10 @@ export class FiniteDifferenceOptimizer {
                 break;
             }
 
-            const updatedParameters = this.applyAdamStep(currentParameters, gradient, adamState, config, iteration);
+            const updatedParameters = this.applyPhysicalConstraints(
+                this.applyAdamStep(currentParameters, gradient, adamState, config, iteration),
+                evaluationOptions
+            );
             const updatedEvaluation = await this.evaluate(updatedParameters, targetImage, evaluationOptions);
             totalRenderCalls += 1;
             const iterationRenderTime = gradientRenderTimeMs + updatedEvaluation.render_time_ms;
