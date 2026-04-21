@@ -307,7 +307,7 @@ function buildMaterialProfile(stats) {
             sheenStrength: 0.28,
             specularBoost: 1.45,
             bumpIntensity: 0.035,
-            sheenTint: [0.92, 0.96, 1.0],
+            sheenTint: [1.0, 1.0, 1.0],
             grainDirection: directionalStreakDetected ? [1.0, 0.0] : [1.0, 0.08],
             anisotropyBias: directionalStreakDetected ? Math.max(0.35, anisotropyScore) : 0
         };
@@ -325,7 +325,7 @@ function buildMaterialProfile(stats) {
             sheenStrength: 0.42,
             specularBoost: 0.72,
             bumpIntensity: 0.12,
-            sheenTint: [1.0, 0.94, 0.92],
+            sheenTint: [1.0, 1.0, 1.0],
             grainDirection: [0.92, 0.35]
         };
     }
@@ -342,7 +342,7 @@ function buildMaterialProfile(stats) {
             sheenStrength: 0.12,
             specularBoost: 0.88,
             bumpIntensity: 0.07,
-            sheenTint: [1.0, 0.95, 0.88],
+            sheenTint: [1.0, 1.0, 1.0],
             grainDirection: [1.0, 0.22]
         };
     }
@@ -359,7 +359,7 @@ function buildMaterialProfile(stats) {
             sheenStrength: 0.2,
             specularBoost: 1.12,
             bumpIntensity: 0.04,
-            sheenTint: [0.98, 0.99, 1.0],
+            sheenTint: [1.0, 1.0, 1.0],
             grainDirection: [1.0, 0.14]
         };
     }
@@ -587,7 +587,9 @@ export class ExperimentRunner {
             detectedMetal,
             anisotropyScore: streak.anisotropyScore,
             horizontalStreakScore: streak.horizontalStreakScore,
-            directionalStreakDetected: streak.directionalStreakDetected
+            directionalStreakDetected: streak.directionalStreakDetected,
+            dominantColor: [avgR, avgG, avgB],
+            isGrayscale: saturation < 0.08
         };
     }
 
@@ -607,7 +609,7 @@ export class ExperimentRunner {
             metalProbability: stats.metalProbability,
             anisotropyScore: stats.anisotropyScore,
             directionalStreakDetected: stats.directionalStreakDetected,
-            dominantColor: [stats.avgR, stats.avgG, stats.avgB]
+            dominantColor: stats.dominantColor || [stats.avgR, stats.avgG, stats.avgB]
         };
     }
 
@@ -756,9 +758,10 @@ export class ExperimentRunner {
                     'mse',
                     'ssim',
                     'sobel_edge_loss',
+                    'color_mean_loss',
                     'histogram_loss',
-                    'edge_direction_loss',
-                    'specular_prior_loss'
+                    'saturation_loss',
+                    'perceptual_loss'
                 ]
             }
         };
@@ -787,6 +790,7 @@ export class ExperimentRunner {
             showLightHelper: false,
             transparentBackground: true,
             forceNeutralLighting: true,
+            forceNeutralEnvironment: true,
             disableToneMapping: true,
             targetAnalysis: record.materialProfile?.stats || null
         };
@@ -978,9 +982,10 @@ export class ExperimentRunner {
             'mse',
             'ssim',
             'sobel_edge_loss',
+            'color_mean_loss',
             'histogram_loss',
-            'edge_direction_loss',
-            'specular_prior_loss'
+            'saturation_loss',
+            'perceptual_loss'
         ];
         const values = [
             result?.config?.image_id ?? '',
@@ -1003,9 +1008,10 @@ export class ExperimentRunner {
             metrics.mse ?? '',
             metrics.ssim ?? '',
             metrics.sobel_edge_loss ?? '',
+            metrics.color_mean_loss ?? '',
             metrics.histogram_loss ?? '',
-            metrics.edge_direction_loss ?? '',
-            metrics.specular_prior_loss ?? ''
+            metrics.saturation_loss ?? '',
+            metrics.perceptual_loss ?? ''
         ];
 
         const escapeCsv = (value) => `"${String(value).replace(/"/g, '""')}"`;

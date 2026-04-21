@@ -227,7 +227,8 @@ class BRDFApp {
             runAblationAndDisplay: (imageId = this.currentImageId, config = {}) => this.runAblationAndDisplay(imageId, config),
             exportExperimentResults: () => this.exportExperimentResults(),
             runBatchExperiment: (imageList, config = {}) => this.runBatchExperiment(imageList, config),
-            getConvergenceGraphData: () => this.getConvergenceGraphData()
+            getConvergenceGraphData: () => this.getConvergenceGraphData(),
+            runColorValidationTests: () => this.runColorValidationTests()
         };
         window.researchExamples = {
             runExampleExperiment: async () => {
@@ -663,25 +664,25 @@ class BRDFApp {
 
     updateDebugPanel() {
         const stats = this.currentMaterialProfile?.stats || {};
-        const dominantColor = this.currentMaterialProfile?.dominantColor || [stats.avgR ?? 0.5, stats.avgG ?? 0.5, stats.avgB ?? 0.5];
+        const dominantColor = this.currentMaterialProfile?.dominantColor || stats.dominantColor || [stats.avgR ?? 0.5, stats.avgG ?? 0.5, stats.avgB ?? 0.5];
+        const rendererDebug = this.renderer?.getDebugState ? this.renderer.getDebugState() : null;
+        const estimatedRgb = this.parameters.albedo || [0.5, 0.5, 0.5];
+        const materialRgb = rendererDebug?.materialRgb || estimatedRgb;
+        const lightRgb = rendererDebug?.lightRgb || [1, 1, 1];
+        const environmentRgb = rendererDebug?.environmentRgb || [0.5, 0.5, 0.5];
         const setText = (id, value) => {
             const element = document.getElementById(id);
             if (element) {
                 element.textContent = value;
             }
         };
+        const formatRgb = (rgb) => `(${rgb.map((value) => value.toFixed(3)).join(', ')})`;
 
-        setText(
-            'debug-dominant-color',
-            `rgb(${Math.round((dominantColor[0] ?? 0.5) * 255)}, ${Math.round((dominantColor[1] ?? 0.5) * 255)}, ${Math.round((dominantColor[2] ?? 0.5) * 255)})`
-        );
-        setText('debug-saturation', (stats.saturation ?? 0).toFixed(3));
-        setText('debug-metal-probability', (stats.metalProbability ?? 0).toFixed(3));
-        setText('debug-anisotropy-score', (stats.anisotropyScore ?? 0).toFixed(3));
-        setText(
-            'debug-final-params',
-            `albedo=[${this.parameters.albedo.map((value) => value.toFixed(3)).join(', ')}], metallic=${this.parameters.metallic.toFixed(3)}, roughness=${this.parameters.roughness.toFixed(3)}, anisotropy=${(this.parameters.anisotropy ?? 0).toFixed(3)}`
-        );
+        setText('debug-input-avg-rgb', formatRgb(dominantColor));
+        setText('debug-estimated-rgb', formatRgb(estimatedRgb));
+        setText('debug-material-rgb', formatRgb(materialRgb));
+        setText('debug-light-rgb', formatRgb(lightRgb));
+        setText('debug-environment-rgb', formatRgb(environmentRgb));
     }
 
     syncSlidersToParameters() {
@@ -736,8 +737,15 @@ class BRDFApp {
         }
 
         this.renderer.updateMaterial(this.parameters);
+        const debugState = this.renderer.getDebugState?.();
+        if (debugState?.materialRgb) {
+            const [mr, mg, mb] = debugState.materialRgb;
+            this.parameters.albedo = [mr, mg, mb];
+        }
         this.renderer.renderFrame();
         this.syncRenderedImagePreview();
+        this.syncSlidersToParameters();
+        this.updateParameterDisplay();
         this.updateDebugPanel();
     }
 
@@ -860,6 +868,50 @@ class BRDFApp {
             optimize_albedo: true,
             seed: 7
         };
+    }
+
+    createSolidColorCanvas(hexColor, size = 64) {
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const context = canvas.getContext('2d', { willReadFrequently: true });
+        context.fillStyle = hexColor;
+        context.fillRect(0, 0, size, size);
+        return canvas;
+    }
+
+    async runColorValidationTests() {
+        const tests = [
+            { id: 'validation-gray', label: 'gray', color: '#808080' },
+            { id: 'validation-red', label: 'red', color: '#b12828' },
+            { id: 'validation-wood', label: 'wood-brown', color: '#8b5a2b' },
+            { id: 'validation-gold', label: 'gold', color: '#c7a03c' }
+        ];
+        const results = [];
+
+        for (const test of tests) {
+            await this.experimentRunner.registerImage({
+                imageId: test.id,
+                source: this.createSolidColorCanvas(test.color)
+            });
+            const result = await this.experimentRunner.runExperiment({
+                image_id: test.id,
+                init_type: 'heuristic',
+                max_iterations: 20,
+                learning_rate: 0.04,
+                clamp_enabled: true,
+                optimize_albedo: true,
+                seed: 7
+            });
+            results.push({
+                test: test.label,
+                input: test.color,
+                estimated_albedo: result.final_parameters.albedo,
+                final_loss: result.metrics.final_loss
+            });
+        }
+
+        return results;
     }
 
     async startOptimization() {

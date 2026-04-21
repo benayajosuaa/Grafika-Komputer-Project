@@ -66,6 +66,8 @@ export class FiniteDifferenceOptimizer {
         const constrained = cloneParameters(parameters);
         const targetAnalysis = evaluationOptions.targetAnalysis || {};
         const detectedMetal = targetAnalysis.detectedMetal === true || targetAnalysis.metalProbability >= 0.6;
+        const dominantColor = targetAnalysis.dominantColor || null;
+        const grayscaleInput = targetAnalysis.isGrayscale === true || (targetAnalysis.saturation ?? 1) < 0.08;
 
         if (detectedMetal) {
             constrained.metallic = Math.max(0.7, Math.min(1.0, constrained.metallic));
@@ -73,6 +75,19 @@ export class FiniteDifferenceOptimizer {
             if (targetAnalysis.directionalStreakDetected) {
                 constrained.anisotropy = Math.max(0.35, constrained.anisotropy);
             }
+        }
+
+        if (dominantColor) {
+            constrained.albedo = constrained.albedo.map((channel, index) => {
+                const dominant = dominantColor[index] ?? channel;
+                const bounded = Math.max(dominant - 0.35, Math.min(dominant + 0.35, channel));
+                return (0.85 * bounded) + (0.15 * dominant);
+            });
+        }
+
+        if (grayscaleInput) {
+            const mean = (constrained.albedo[0] + constrained.albedo[1] + constrained.albedo[2]) / 3;
+            constrained.albedo = [mean, mean, mean];
         }
 
         return sanitizeParameters(constrained, true);

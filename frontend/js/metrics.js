@@ -344,7 +344,74 @@ function computeHistogramLoss(renderedPixels, targetPixels, bins = 32) {
     return loss / 3;
 }
 
-function computeEdgeDirectionLoss(renderedPixels, targetPixels) {
+function computeChannelMeans(pixels) {
+    const sampleCount = Math.floor(pixels.length / 3);
+    if (sampleCount === 0) {
+        return [0, 0, 0];
+    }
+
+    let sumR = 0;
+    let sumG = 0;
+    let sumB = 0;
+    for (let index = 0; index < sampleCount; index += 1) {
+        sumR += pixels[index * 3];
+        sumG += pixels[index * 3 + 1];
+        sumB += pixels[index * 3 + 2];
+    }
+
+    return [sumR / sampleCount, sumG / sampleCount, sumB / sampleCount];
+}
+
+function computeColorMeanLoss(renderedPixels, targetPixels, options = {}) {
+    const renderedMean = computeChannelMeans(renderedPixels);
+    const targetMean = computeChannelMeans(targetPixels);
+    const baseMeanError = (
+        Math.abs(renderedMean[0] - targetMean[0])
+        + Math.abs(renderedMean[1] - targetMean[1])
+        + Math.abs(renderedMean[2] - targetMean[2])
+    ) / 3;
+
+    const dominantRgb = options.targetAnalysis?.dominantColor || targetMean;
+    const albedo = options.parameters?.albedo || renderedMean;
+    const dominantConstraint = (
+        Math.abs(albedo[0] - dominantRgb[0])
+        + Math.abs(albedo[1] - dominantRgb[1])
+        + Math.abs(albedo[2] - dominantRgb[2])
+    ) / 3;
+    return (0.7 * baseMeanError) + (0.3 * dominantConstraint);
+}
+
+function computeAverageSaturation(pixels) {
+    const sampleCount = Math.floor(pixels.length / 3);
+    if (sampleCount === 0) {
+        return 0;
+    }
+
+    let saturationSum = 0;
+    for (let index = 0; index < sampleCount; index += 1) {
+        const r = pixels[index * 3];
+        const g = pixels[index * 3 + 1];
+        const b = pixels[index * 3 + 2];
+        const maxC = Math.max(r, g, b);
+        const minC = Math.min(r, g, b);
+        const sat = maxC <= 1e-8 ? 0 : (maxC - minC) / maxC;
+        saturationSum += sat;
+    }
+    return saturationSum / sampleCount;
+}
+
+function computeSaturationLoss(renderedPixels, targetPixels) {
+    return Math.abs(computeAverageSaturation(renderedPixels) - computeAverageSaturation(targetPixels));
+}
+
+function rgbToPerceptualTriplet(r, g, b) {
+    const luma = 0.299 * r + 0.587 * g + 0.114 * b;
+    const rg = r - g;
+    const yb = (r + g) * 0.5 - b;
+    return [luma, rg, yb];
+}
+
+function computePerceptualLoss(renderedPixels, targetPixels) {
     const sampleCount = Math.min(
         Math.floor(renderedPixels.length / 3),
         Math.floor(targetPixels.length / 3)
@@ -353,97 +420,26 @@ function computeEdgeDirectionLoss(renderedPixels, targetPixels) {
         return 0;
     }
 
-    const { width, height } = inferImageShape(sampleCount);
-    if (width * height !== sampleCount || width < 3 || height < 3) {
-        return 0;
-    }
-
-    const renderedLum = extractLuminance(renderedPixels, sampleCount);
-    const targetLum = extractLuminance(targetPixels, sampleCount);
-    let weightedDirectionError = 0;
-    let weightSum = 0;
-
-    for (let py = 1; py < height - 1; py += 1) {
-        for (let px = 1; px < width - 1; px += 1) {
-            const i00 = (py - 1) * width + (px - 1);
-            const i01 = (py - 1) * width + px;
-            const i02 = (py - 1) * width + (px + 1);
-            const i10 = py * width + (px - 1);
-            const i12 = py * width + (px + 1);
-            const i20 = (py + 1) * width + (px - 1);
-            const i21 = (py + 1) * width + px;
-            const i22 = (py + 1) * width + (px + 1);
-
-            const rGx = (renderedLum[i02] + 2 * renderedLum[i12] + renderedLum[i22]) - (renderedLum[i00] + 2 * renderedLum[i10] + renderedLum[i20]);
-            const rGy = (renderedLum[i20] + 2 * renderedLum[i21] + renderedLum[i22]) - (renderedLum[i00] + 2 * renderedLum[i01] + renderedLum[i02]);
-            const tGx = (targetLum[i02] + 2 * targetLum[i12] + targetLum[i22]) - (targetLum[i00] + 2 * targetLum[i10] + targetLum[i20]);
-            const tGy = (targetLum[i20] + 2 * targetLum[i21] + targetLum[i22]) - (targetLum[i00] + 2 * targetLum[i01] + targetLum[i02]);
-
-            const targetMagnitude = Math.sqrt(tGx * tGx + tGy * tGy);
-            if (targetMagnitude < 1e-4) {
-                continue;
-            }
-
-            const renderedMagnitude = Math.sqrt(rGx * rGx + rGy * rGy);
-            const dot = rGx * tGx + rGy * tGy;
-            const cosine = dot / Math.max(1e-6, renderedMagnitude * targetMagnitude);
-            const directionError = 1 - Math.max(-1, Math.min(1, cosine));
-            weightedDirectionError += directionError * targetMagnitude;
-            weightSum += targetMagnitude;
-        }
-    }
-
-    if (weightSum <= 1e-6) {
-        return 0;
-    }
-
-    return weightedDirectionError / weightSum;
-}
-
-function computeHighlightRatio(pixels, threshold = 0.72) {
-    const sampleCount = Math.floor(pixels.length / 3);
-    if (sampleCount === 0) {
-        return 0;
-    }
-
-    let highlights = 0;
+    let total = 0;
     for (let index = 0; index < sampleCount; index += 1) {
-        const r = pixels[index * 3];
-        const g = pixels[index * 3 + 1];
-        const b = pixels[index * 3 + 2];
-        const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-        if (lum >= threshold) {
-            highlights += 1;
-        }
+        const [rl, rrg, ryb] = rgbToPerceptualTriplet(
+            renderedPixels[index * 3],
+            renderedPixels[index * 3 + 1],
+            renderedPixels[index * 3 + 2]
+        );
+        const [tl, trg, tyb] = rgbToPerceptualTriplet(
+            targetPixels[index * 3],
+            targetPixels[index * 3 + 1],
+            targetPixels[index * 3 + 2]
+        );
+
+        const dl = rl - tl;
+        const drg = rrg - trg;
+        const dyb = ryb - tyb;
+        total += (0.6 * dl * dl) + (0.25 * drg * drg) + (0.15 * dyb * dyb);
     }
 
-    return highlights / sampleCount;
-}
-
-function computeSpecularPriorLoss(renderedPixels, targetPixels, options = {}) {
-    const parameters = options.parameters || {};
-    const analysis = options.targetAnalysis || {};
-    const targetHighlightRatio = computeHighlightRatio(targetPixels, 0.72);
-    const renderedHighlightRatio = computeHighlightRatio(renderedPixels, 0.72);
-    const targetSaturation = clamp01(analysis.saturation ?? 0.5);
-    const targetMetalProbability = clamp01(
-        analysis.metalProbability
-        ?? (targetHighlightRatio * 1.9 + (1 - targetSaturation) * 0.55)
-    );
-    const metalLike = targetMetalProbability >= 0.55;
-    const desiredMetallic = metalLike ? 0.85 : 0.18;
-    const desiredRoughness = metalLike ? 0.3 : 0.5;
-    const desiredAnisotropy = analysis.directionalStreakDetected ? clamp01(Math.max(0.35, analysis.anisotropyScore ?? 0)) : 0;
-    const metallicError = Math.abs((parameters.metallic ?? 0) - desiredMetallic);
-    const roughnessError = Math.abs((parameters.roughness ?? 0.5) - desiredRoughness);
-    const anisotropyError = Math.abs((parameters.anisotropy ?? 0) - desiredAnisotropy);
-    const highlightError = Math.abs(renderedHighlightRatio - targetHighlightRatio);
-    return (
-        0.45 * metallicError
-        + 0.2 * roughnessError
-        + 0.15 * anisotropyError
-        + 0.2 * highlightError
-    );
+    return total / sampleCount;
 }
 
 export function computePhotometricMetrics(renderedPixels, targetPixels, options = {}) {
@@ -453,10 +449,17 @@ export function computePhotometricMetrics(renderedPixels, targetPixels, options 
     const ssim = ssimRaw == null ? 0 : Math.max(-1, Math.min(1, ssimRaw));
     const ssimLoss = 1 - ssim;
     const sobelEdgeLoss = computeSobelEdgeLoss(renderedPixels, targetPixels);
+    const colorMeanLoss = computeColorMeanLoss(renderedPixels, targetPixels, options);
     const histogramLoss = computeHistogramLoss(renderedPixels, targetPixels, options.histogramBins || 32);
-    const edgeDirectionLoss = computeEdgeDirectionLoss(renderedPixels, targetPixels);
-    const specularPriorLoss = computeSpecularPriorLoss(renderedPixels, targetPixels, options);
-    const totalLoss = (0.4 * mse) + (0.3 * histogramLoss) + (0.2 * edgeDirectionLoss) + (0.1 * specularPriorLoss);
+    const saturationLoss = computeSaturationLoss(renderedPixels, targetPixels);
+    const perceptualLoss = computePerceptualLoss(renderedPixels, targetPixels);
+    const totalLoss = (
+        (0.35 * mse)
+        + (0.25 * colorMeanLoss)
+        + (0.20 * histogramLoss)
+        + (0.10 * saturationLoss)
+        + (0.10 * perceptualLoss)
+    );
 
     const metrics = {
         photometric_loss: totalLoss,
@@ -464,9 +467,10 @@ export function computePhotometricMetrics(renderedPixels, targetPixels, options 
         ssim,
         ssim_loss: ssimLoss,
         sobel_edge_loss: sobelEdgeLoss,
+        color_mean_loss: colorMeanLoss,
         histogram_loss: histogramLoss,
-        edge_direction_loss: edgeDirectionLoss,
-        specular_prior_loss: specularPriorLoss
+        saturation_loss: saturationLoss,
+        perceptual_loss: perceptualLoss
     };
 
     metrics.rmse = computeRMSE(renderedPixels, targetPixels);
@@ -634,9 +638,10 @@ export function computeFinalMetrics({
         ssim: finalEvaluationMetrics ? finalEvaluationMetrics.ssim : null,
         mse: finalEvaluationMetrics ? finalEvaluationMetrics.mse : null,
         sobel_edge_loss: finalEvaluationMetrics ? finalEvaluationMetrics.sobel_edge_loss : null,
+        color_mean_loss: finalEvaluationMetrics ? finalEvaluationMetrics.color_mean_loss : null,
         histogram_loss: finalEvaluationMetrics ? finalEvaluationMetrics.histogram_loss : null,
-        edge_direction_loss: finalEvaluationMetrics ? finalEvaluationMetrics.edge_direction_loss : null,
-        specular_prior_loss: finalEvaluationMetrics ? finalEvaluationMetrics.specular_prior_loss : null,
+        saturation_loss: finalEvaluationMetrics ? finalEvaluationMetrics.saturation_loss : null,
+        perceptual_loss: finalEvaluationMetrics ? finalEvaluationMetrics.perceptual_loss : null,
         failure,
         convergence: convergenceAnalysis,
         status: failure.failed ? 'failed' : 'success'

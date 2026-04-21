@@ -338,8 +338,12 @@ export class ThreeJSRenderer {
         this.isMultiviewEnabled = false;
 
         this.scene = new THREE.Scene();
+        this.scene.environment = null;
+        this.scene.background = null;
         this.camera = new THREE.PerspectiveCamera(75, this.width / this.height, 0.1, 1000);
         this.multiviewScene = new THREE.Scene();
+        this.multiviewScene.environment = null;
+        this.multiviewScene.background = null;
         this.renderer = new THREE.WebGLRenderer({
             antialias: true,
             alpha: true,
@@ -353,8 +357,8 @@ export class ThreeJSRenderer {
 
         this.renderer.setSize(this.width, this.height);
         this.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-        this.renderer.setClearColor(0x1a1a2e);
-        this.renderer.toneMapping = THREE.NoToneMapping;
+        this.renderer.setClearColor(0x808080);
+        this.renderer.toneMapping = THREE.ACESFilmicToneMapping;
         if ('outputColorSpace' in this.renderer && THREE.SRGBColorSpace) {
             this.renderer.outputColorSpace = THREE.SRGBColorSpace;
         }
@@ -524,8 +528,8 @@ export class ThreeJSRenderer {
             preserveDrawingBuffer: true
         });
         this.multiviewRenderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
-        this.multiviewRenderer.setClearColor(0x101827);
-        this.multiviewRenderer.toneMapping = THREE.NoToneMapping;
+        this.multiviewRenderer.setClearColor(0x808080);
+        this.multiviewRenderer.toneMapping = THREE.ACESFilmicToneMapping;
         if ('outputColorSpace' in this.multiviewRenderer && THREE.SRGBColorSpace) {
             this.multiviewRenderer.outputColorSpace = THREE.SRGBColorSpace;
         }
@@ -693,7 +697,12 @@ export class ThreeJSRenderer {
         const opacity = Math.max(0.0, Math.min(1.0, params.opacity ?? 1.0));
         const ior = Math.max(1.0, Math.min(2.5, params.ior ?? 1.5));
         const glassEnabled = params.materialMode === 'glass';
-        this.uniforms.baseColor.value.setRGB(clamp01(r), clamp01(g), clamp01(b));
+        const safeR = clamp01(r);
+        const safeG = clamp01(g);
+        const safeB = clamp01(b);
+        this.uniforms.baseColor.value.r = safeR;
+        this.uniforms.baseColor.value.g = safeG;
+        this.uniforms.baseColor.value.b = safeB;
         this.uniforms.lightIntensity.value = lightIntensity;
         this.uniforms.opacity.value = opacity;
         this.uniforms.ior.value = ior;
@@ -1131,6 +1140,9 @@ export class ThreeJSRenderer {
         );
         const previousLightPosition = this.lightState.position.clone();
         const previousLightColor = this.lightState.color.clone();
+        const previousHemiSky = this.uniforms.hemiSkyColor.value.clone();
+        const previousHemiGround = this.uniforms.hemiGroundColor.value.clone();
+        const previousHemiIntensity = this.uniforms.hemiIntensity.value;
         const previousClearColor = this.renderer.getClearColor(new THREE.Color()).clone();
         const previousClearAlpha = this.renderer.getClearAlpha();
         const previousToneMapping = this.renderer.toneMapping;
@@ -1145,7 +1157,7 @@ export class ThreeJSRenderer {
         }
 
         this.lightArrow.visible = options.showLightHelper === true;
-        this.renderer.setClearColor(0x000000, 0);
+        this.renderer.setClearColor(0x808080, 1);
         this.setGeometryMode(snapshotGeometry);
         if (options.snapshotScale) {
             Object.values(this.meshes).forEach((mesh) => {
@@ -1159,6 +1171,13 @@ export class ThreeJSRenderer {
 
         if (options.forceNeutralLighting === true) {
             this.setLightingVariation('default');
+            this.lightState.color.set(0xffffff);
+            this.uniforms.lightColor.value.set(0xffffff);
+        }
+        if (options.forceNeutralEnvironment === true) {
+            this.uniforms.hemiSkyColor.value.setRGB(0.5, 0.5, 0.5);
+            this.uniforms.hemiGroundColor.value.setRGB(0.5, 0.5, 0.5);
+            this.uniforms.hemiIntensity.value = 0.0;
         } else if (options.lightingType) {
             this.setLightingVariation(options.lightingType);
         }
@@ -1202,6 +1221,9 @@ export class ThreeJSRenderer {
         this.lightState.color.copy(previousLightColor);
         this.uniforms.lightPosition.value.copy(previousLightPosition);
         this.uniforms.lightColor.value.copy(previousLightColor);
+        this.uniforms.hemiSkyColor.value.copy(previousHemiSky);
+        this.uniforms.hemiGroundColor.value.copy(previousHemiGround);
+        this.uniforms.hemiIntensity.value = previousHemiIntensity;
         this.lightArrow.setDirection(previousLightPosition.clone().normalize());
         this.multiviewLightArrow.setDirection(previousLightPosition.clone().normalize());
         this.renderer.setClearColor(previousClearColor, previousClearAlpha);
@@ -1228,6 +1250,27 @@ export class ThreeJSRenderer {
             avg_frame_time_ms: averageFrameTime,
             fps: averageFrameTime > 0 ? 1000 / averageFrameTime : null,
             last_render_time_ms: this.lastRenderTimeMs
+        };
+    }
+
+    getDebugState() {
+        const clearColor = this.renderer.getClearColor(new THREE.Color());
+        return {
+            materialRgb: [
+                this.uniforms.baseColor.value.r,
+                this.uniforms.baseColor.value.g,
+                this.uniforms.baseColor.value.b
+            ],
+            lightRgb: [
+                this.uniforms.lightColor.value.r,
+                this.uniforms.lightColor.value.g,
+                this.uniforms.lightColor.value.b
+            ],
+            environmentRgb: [
+                (this.uniforms.hemiSkyColor.value.r + this.uniforms.hemiGroundColor.value.r + clearColor.r) / 3,
+                (this.uniforms.hemiSkyColor.value.g + this.uniforms.hemiGroundColor.value.g + clearColor.g) / 3,
+                (this.uniforms.hemiSkyColor.value.b + this.uniforms.hemiGroundColor.value.b + clearColor.b) / 3
+            ]
         };
     }
 
