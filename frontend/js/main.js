@@ -187,6 +187,8 @@ class BRDFApp {
         };
         this.charts = {};
         this.multiviewVisible = false;
+        this.latestPerformanceProfile = null;
+        this.latestPerformanceBenchmark = null;
 
         this.initializeRenderer();
         this.experimentRunner = new ExperimentRunner({
@@ -228,7 +230,8 @@ class BRDFApp {
             exportExperimentResults: () => this.exportExperimentResults(),
             runBatchExperiment: (imageList, config = {}) => this.runBatchExperiment(imageList, config),
             getConvergenceGraphData: () => this.getConvergenceGraphData(),
-            runColorValidationTests: () => this.runColorValidationTests()
+            runColorValidationTests: () => this.runColorValidationTests(),
+            measurePerformance: (durationMs = 3000, targetFps = 60) => this.measurePerformance(durationMs, targetFps)
         };
         window.researchExamples = {
             runExampleExperiment: async () => {
@@ -373,6 +376,9 @@ class BRDFApp {
 
         const exportExperimentBtn = document.getElementById('export-experiment-figure');
         if (exportExperimentBtn) exportExperimentBtn.addEventListener('click', () => this.exportBatchCsv());
+
+        const measureFpsBtn = document.getElementById('measure-fps-btn');
+        if (measureFpsBtn) measureFpsBtn.addEventListener('click', () => this.measurePerformance());
     }
 
     getResearchChartOptions(yLabel, isLogarithmic = false) {
@@ -491,17 +497,75 @@ class BRDFApp {
 
     startPerformanceProbe() {
         const avgFrameElement = document.getElementById('avg-frame');
-        if (!avgFrameElement) {
+        const liveFpsElement = document.getElementById('live-fps');
+        const p95FrameElement = document.getElementById('p95-frame');
+        const sampleCountElement = document.getElementById('fps-sample-count');
+        if (!avgFrameElement || !liveFpsElement || !p95FrameElement || !sampleCountElement) {
             return;
         }
 
         const update = () => {
             const profile = this.experimentRunner.profilePerformance();
+            this.latestPerformanceProfile = profile;
             avgFrameElement.textContent = profile.avg_frame_time_ms ? `${profile.avg_frame_time_ms.toFixed(2)} ms` : '--';
+            liveFpsElement.textContent = profile.fps ? `${profile.fps.toFixed(2)} FPS` : '--';
+            p95FrameElement.textContent = profile.p95_frame_time_ms ? `${profile.p95_frame_time_ms.toFixed(2)} ms` : '--';
+            sampleCountElement.textContent = profile.sample_count ? `${profile.sample_count}` : '--';
+            this.updateFpsTargetStatus(profile);
             requestAnimationFrame(update);
         };
 
         requestAnimationFrame(update);
+    }
+
+    updateFpsTargetStatus(profile = this.latestPerformanceProfile, benchmark = this.latestPerformanceBenchmark) {
+        const summaryElement = document.getElementById('fps-benchmark-summary');
+        const fps = benchmark?.fps ?? profile?.fps ?? null;
+        const targetFps = benchmark?.target_fps ?? 60;
+        const meetsTarget = benchmark?.meets_target ?? profile?.meets_target_60fps ?? null;
+
+        if (summaryElement && !benchmark) {
+            summaryElement.textContent = 'Gunakan "Measure FPS" untuk membuat hasil pengukuran kuantitatif 3 detik.';
+            return;
+        }
+
+        if (summaryElement && benchmark && fps != null && meetsTarget != null) {
+            const statusLabel = meetsTarget ? 'PASS' : 'FAIL';
+            summaryElement.textContent = `${statusLabel} target >=${targetFps} FPS.`;
+        }
+    }
+
+    async measurePerformance(durationMs = 3000, targetFps = 60) {
+        const measureButton = document.getElementById('measure-fps-btn');
+        const summaryElement = document.getElementById('fps-benchmark-summary');
+        if (measureButton) {
+            measureButton.disabled = true;
+            measureButton.textContent = 'Measuring...';
+        }
+        if (summaryElement) {
+            summaryElement.textContent = `Mengukur performa selama ${(durationMs / 1000).toFixed(1)} detik...`;
+        }
+
+        try {
+            const benchmark = await this.renderer.measurePerformance(durationMs, targetFps);
+            this.latestPerformanceBenchmark = benchmark;
+            this.updateFpsTargetStatus(this.latestPerformanceProfile, benchmark);
+
+            if (summaryElement) {
+                const avgFps = benchmark.fps != null ? benchmark.fps.toFixed(2) : '--';
+                const p95 = benchmark.p95_frame_time_ms != null ? benchmark.p95_frame_time_ms.toFixed(2) : '--';
+                const duration = (benchmark.duration_ms / 1000).toFixed(2);
+                const statusLabel = benchmark.meets_target ? 'PASS' : 'FAIL';
+                summaryElement.textContent = `Benchmark ${duration}s: avg ${avgFps} FPS, p95 ${p95} ms, ${benchmark.sample_count} samples, ${statusLabel} target >=${benchmark.target_fps} FPS.`;
+            }
+
+            return benchmark;
+        } finally {
+            if (measureButton) {
+                measureButton.disabled = false;
+                measureButton.textContent = 'Measure FPS (Target >=60)';
+            }
+        }
     }
 
     async handleImageUpload() {

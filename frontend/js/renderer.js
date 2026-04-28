@@ -336,6 +336,7 @@ export class ThreeJSRenderer {
         this.textureLoader = new THREE.TextureLoader();
         this.materialProfile = createDefaultMaterialProfile();
         this.isMultiviewEnabled = false;
+        this.performanceBenchmark = null;
 
         this.scene = new THREE.Scene();
         this.scene.environment = null;
@@ -1242,15 +1243,100 @@ export class ThreeJSRenderer {
     }
 
     profilePerformance() {
-        const averageFrameTime = this.frameTimes.length > 0
-            ? this.frameTimes.reduce((acc, value) => acc + value, 0) / this.frameTimes.length
-            : this.lastRenderTimeMs;
+        const stats = this.computeFrameTimingStats();
+        const averageFrameTime = stats.avgFrameTimeMs ?? this.lastRenderTimeMs;
 
         return {
             avg_frame_time_ms: averageFrameTime,
             fps: averageFrameTime > 0 ? 1000 / averageFrameTime : null,
+            p95_frame_time_ms: stats.p95FrameTimeMs,
+            min_fps: stats.minFps,
+            max_fps: stats.maxFps,
+            sample_count: stats.sampleCount,
+            meets_target_60fps: averageFrameTime > 0 ? (1000 / averageFrameTime) >= 60 : null,
             last_render_time_ms: this.lastRenderTimeMs
         };
+    }
+
+    computeFrameTimingStats() {
+        const samples = this.frameTimes.filter((value) => Number.isFinite(value) && value > 0);
+        if (samples.length === 0) {
+            return {
+                sampleCount: 0,
+                avgFrameTimeMs: null,
+                p95FrameTimeMs: null,
+                minFps: null,
+                maxFps: null
+            };
+        }
+
+        const sortedSamples = [...samples].sort((a, b) => a - b);
+        const sampleCount = sortedSamples.length;
+        const sum = sortedSamples.reduce((acc, value) => acc + value, 0);
+        const avgFrameTimeMs = sum / sampleCount;
+        const p95Index = Math.min(sampleCount - 1, Math.floor(sampleCount * 0.95));
+        const p95FrameTimeMs = sortedSamples[p95Index];
+        const minFrameTimeMs = sortedSamples[0];
+        const maxFrameTimeMs = sortedSamples[sampleCount - 1];
+
+        return {
+            sampleCount,
+            avgFrameTimeMs,
+            p95FrameTimeMs,
+            minFps: maxFrameTimeMs > 0 ? 1000 / maxFrameTimeMs : null,
+            maxFps: minFrameTimeMs > 0 ? 1000 / minFrameTimeMs : null
+        };
+    }
+
+    measurePerformance(durationMs = 3000, targetFps = 60) {
+        const safeDurationMs = Math.max(500, Math.floor(durationMs));
+        return new Promise((resolve) => {
+            const benchmark = {
+                start: performance.now(),
+                end: null,
+                deltas: [],
+                lastTimestamp: null,
+                durationMs: safeDurationMs,
+                targetFps,
+                resolve
+            };
+
+            this.performanceBenchmark = benchmark;
+        });
+    }
+
+    finishPerformanceBenchmark() {
+        if (!this.performanceBenchmark) {
+            return;
+        }
+
+        const benchmark = this.performanceBenchmark;
+        this.performanceBenchmark = null;
+        const deltas = benchmark.deltas.filter((value) => Number.isFinite(value) && value > 0);
+        const sortedDeltas = [...deltas].sort((a, b) => a - b);
+        const durationMs = benchmark.end != null ? Math.max(0, benchmark.end - benchmark.start) : 0;
+        const sampleCount = sortedDeltas.length;
+        const averageFrameTimeMs = sampleCount > 0
+            ? sortedDeltas.reduce((acc, value) => acc + value, 0) / sampleCount
+            : null;
+        const fps = averageFrameTimeMs ? 1000 / averageFrameTimeMs : null;
+        const p95FrameTimeMs = sampleCount > 0
+            ? sortedDeltas[Math.min(sampleCount - 1, Math.floor(sampleCount * 0.95))]
+            : null;
+        const minFrameTimeMs = sampleCount > 0 ? sortedDeltas[0] : null;
+        const maxFrameTimeMs = sampleCount > 0 ? sortedDeltas[sampleCount - 1] : null;
+
+        benchmark.resolve({
+            duration_ms: durationMs,
+            sample_count: sampleCount,
+            avg_frame_time_ms: averageFrameTimeMs,
+            fps,
+            p95_frame_time_ms: p95FrameTimeMs,
+            min_fps: maxFrameTimeMs ? 1000 / maxFrameTimeMs : null,
+            max_fps: minFrameTimeMs ? 1000 / minFrameTimeMs : null,
+            target_fps: benchmark.targetFps,
+            meets_target: fps != null ? fps >= benchmark.targetFps : false
+        });
     }
 
     getDebugState() {
@@ -1294,6 +1380,14 @@ export class ThreeJSRenderer {
             this.frameTimes.push(delta);
             if (this.frameTimes.length > 120) {
                 this.frameTimes.shift();
+            }
+
+            if (this.performanceBenchmark) {
+                this.performanceBenchmark.deltas.push(delta);
+                this.performanceBenchmark.end = now;
+                if (now - this.performanceBenchmark.start >= this.performanceBenchmark.durationMs) {
+                    this.finishPerformanceBenchmark();
+                }
             }
         }
     }
